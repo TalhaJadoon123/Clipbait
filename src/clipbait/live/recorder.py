@@ -79,6 +79,15 @@ class Recorder:
     def slice(self, start: float, end: float, out: Path) -> Path:
         raise NotImplementedError
 
+    def slice_analysis(self, start: float, end: float, out: Path) -> Path:
+        """A cheap slice for the content watcher.
+
+        Analysis runs every few seconds forever, so it must not pay full-price
+        encoding. Recorders that can produce a smaller/faster file override
+        this; everything else still gets a correct slice.
+        """
+        return self.slice(start, end, out)
+
     def stats(self) -> dict:
         return {}
 
@@ -280,6 +289,12 @@ class HlsRecorder(Recorder):
             self._monitor.join(timeout=3)
 
     def slice(self, start: float, end: float, out: Path) -> Path:
+        return self._slice(start, end, out, analysis=False)
+
+    def slice_analysis(self, start: float, end: float, out: Path) -> Path:
+        return self._slice(start, end, out, analysis=True)
+
+    def _slice(self, start: float, end: float, out: Path, *, analysis: bool) -> Path:
         segments, offset = select_segments(self._segments, start, end)
         if not segments:
             window = (
@@ -299,21 +314,44 @@ class HlsRecorder(Recorder):
                 break
         concat = concat_file(segments, self.directory / "slice.ffconcat")
         out.parent.mkdir(parents=True, exist_ok=True)
-        media.run(
-            [
-                get_settings().ffmpeg,
-                "-hide_banner",
-                "-y",
-                "-f",
-                "concat",
-                "-safe",
-                "0",
-                "-i",
-                str(concat),
-                "-ss",
-                f"{offset:.3f}",
-                "-t",
-                f"{max(0.5, end - start):.3f}",
+        # Seek before -i: ffmpeg then decodes only from the nearest keyframe and
+        # discards the gap, instead of decoding the whole window from zero.
+        cmd = [
+            get_settings().ffmpeg,
+            "-hide_banner",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-ss",
+            f"{offset:.3f}",
+            "-i",
+            str(concat),
+            "-t",
+            f"{max(0.5, end - start):.3f}",
+        ]
+        if analysis:
+            # 480p/ultrafast is enough for a loudness curve and scene cuts. The
+            # final capture below stays at full quality.
+            cmd += [
+                "-vf",
+                "scale=-2:480",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-crf",
+                "30",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "96k",
+                "-ar",
+                "16000",
+            ]
+        else:
+            cmd += [
                 "-c:v",
                 "libx264",
                 "-preset",
@@ -326,12 +364,9 @@ class HlsRecorder(Recorder):
                 "160k",
                 "-ar",
                 "48000",
-                "-movflags",
-                "+faststart",
-                str(out),
-            ],
-            timeout=300,
-        )
+            ]
+        cmd += ["-movflags", "+faststart", str(out)]
+        media.run(cmd, timeout=300)
         return out
 
     def stats(self) -> dict:

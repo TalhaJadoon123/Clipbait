@@ -543,7 +543,8 @@ class ContentWatcher:
             with tempfile.TemporaryDirectory(dir=self.directory, prefix="win-") as temp:
                 video = Path(temp) / "window.mp4"
                 audio = Path(temp) / "window.wav"
-                self.recorder.slice(start, end, video)
+                cutter = getattr(self.recorder, "slice_analysis", self.recorder.slice)
+                cutter(start, end, video)
                 if not video.exists() or video.stat().st_size < 5_000:
                     return None
                 duration = max(0.5, end - start)

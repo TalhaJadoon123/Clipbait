@@ -383,3 +383,29 @@ def test_speech_anchors_the_cut_on_the_scored_line(tmp_path: Path) -> None:
     assert candidate.end == pytest.approx(window_start + 42.0)
     assert "no way" in candidate.signal.quote.lower()
     assert candidate.signal.origin == "speech"
+
+
+def test_analysis_uses_the_cheap_slice_when_the_recorder_has_one(tmp_path: Path) -> None:
+    """Analysis runs every few seconds; it must not pay full-price encoding."""
+    calls: list[str] = []
+
+    class Cheap(StubRecorder):
+        def slice_analysis(self, start: float, end: float, out: Path) -> Path:
+            calls.append("analysis")
+            return super().slice(start, end, out)
+
+        def slice(self, start: float, end: float, out: Path) -> Path:
+            calls.append("full")
+            return super().slice(start, end, out)
+
+    watcher = ContentWatcher(
+        Cheap(make_video(tmp_path / "stream.mp4", seconds=6)),
+        directory=tmp_path / "live",
+        window_seconds=12,
+        interval_seconds=8,
+        threshold=0.1,
+        transcriber=HypeTranscriber(),
+        allow_mock_speech=True,
+    )
+    assert watcher.step(now=60.0) is not None
+    assert calls == ["analysis"]

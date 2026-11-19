@@ -387,7 +387,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
     if args.export:
         for item in queue.items:
             try:
-                bundle = export_bundle(item.clip_id)
+                bundle = export_bundle(item.clip_id, campaign=args.campaign)
             except FileNotFoundError as exc:
                 print(f"  skip {item.clip_id}: {exc}")
                 continue
@@ -472,6 +472,9 @@ def build_parser() -> argparse.ArgumentParser:
     queue_cmd.add_argument("--include-posted", action="store_true")
     queue_cmd.add_argument("--json", action="store_true")
     queue_cmd.add_argument("--export", action="store_true", help="write upload bundles")
+    queue_cmd.add_argument(
+        "--campaign", help="campaign rules file used by the check inside each bundle"
+    )
     queue_cmd.add_argument("--mark", metavar="CLIP_ID", help="mark one clip uploaded")
     queue_cmd.add_argument("--url", help="posted URL for --mark")
     queue_cmd.add_argument("--platform", help="platform for --mark")

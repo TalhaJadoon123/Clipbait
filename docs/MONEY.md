@@ -254,6 +254,45 @@ the upside; the expected total is the number to use.
 
 ---
 
+## The unattended pass
+
+`scripts/earn.sh` chains the whole pipeline when nobody is watching the terminal:
+
+```bash
+./scripts/earn.sh                                  # discover -> watch 30m -> export
+QUERY="kai cenat" MINUTES=45 MAX_CLIPS=6 ./scripts/earn.sh
+CAMPAIGN=data/campaigns/clipmoney.md ./scripts/earn.sh
+SOURCE="https://youtube.com/watch?v=..." ./scripts/earn.sh   # skip discovery
+```
+
+It finds the biggest live room for the query, monitors it with on-stream
+detection, then writes an export bundle for every clip above `MIN_SCORE`. It
+does **not** upload: the last mile is a human with a verified account.
+
+## Posting is the last mile
+
+Everything up to here is automated. What is not automated, and should not be
+pretended otherwise:
+
+1. Join the campaign server (Clip Money: <https://discord.gg/FnCMF4KMAT>).
+2. Connect the TikTok/Reels/Shorts account that will post, and let the platform
+   report audience stats. The account gets a country tier, and some campaigns
+   only accept certain tiers.
+3. Opt into a campaign and **read its brief**, then paste the real rules into
+   `data/campaigns/<campaign>.md` (see the check above). The brief is the only
+   source of truth for duration, required hashtags, mention, sound and whether
+   footage must come from the campaign's clip bank.
+4. Post from that account, then submit the link in the campaign's submit
+   channel. Approval is usually within an hour; views update every two hours.
+5. Payment goes to PayPal when the campaign ends. Keep view/like counts public
+   or tracking cannot verify them.
+
+Rates move. On 2026-11-20 the Kai Cenat campaign listed **$2.00 per 1,000
+verified views** with a $25K budget (62% left); Clip's best live rate that day
+was $3.00. Treat any number here as a snapshot, not a promise.
+
+---
+
 ## Choosing platforms in practice
 
 * **Volume plays** (gaming, reactions, stream clips): TikTok and Reels. Expect

@@ -153,6 +153,10 @@ clipbait streams --query "gta 6" --watch
 clipbait campaign
 clipbait check clip_abc123 --campaign data/campaigns/clipmoney.md
 
+# One unattended pass: find a live room, watch it, package what is ready
+./scripts/earn.sh
+QUERY="kai cenat" MINUTES=45 CAMPAIGN=data/campaigns/clipmoney.md ./scripts/earn.sh
+
 # Inspect the environment
 clipbait doctor
 ```
