@@ -185,11 +185,21 @@ def estimate_platform(
     region: str = "US",
     *,
     duration: float = 40.0,
+    rate_per_1k: float | None = None,
 ) -> PayoutEstimate:
     score = max(0.0, min(100.0, float(score or 0.0)))
     low_views, views, high_views = expected_views(score, platform, duration)
-    rpm_low, rpm_mid, rpm_high = _rpm(platform)
-    factor = region_factor(region)
+    campaign_rate = float(rate_per_1k or 0.0)
+
+    if campaign_rate > 0:
+        # A campaign pays a published rate per verified view, so the ad-market
+        # RPM and the region factor do not apply. Views still come from the same
+        # score model; the rate replaces the unknown, not the reach.
+        rpm_low = rpm_mid = rpm_high = campaign_rate
+        factor = 1.0
+    else:
+        rpm_low, rpm_mid, rpm_high = _rpm(platform)
+        factor = region_factor(region)
 
     expected_usd = views / 1000.0 * rpm_mid * factor
     usd_low = low_views / 1000.0 * rpm_low * factor
@@ -199,12 +209,20 @@ def estimate_platform(
     if score >= 70 and 22 <= duration <= 65:
         confidence = "medium"
 
-    assumptions = (
-        f"{platform} pays about ${rpm_mid:.2f} per 1000 views",
-        f"{region or 'US'} impressions are worth {factor:.0%} of a US impression",
-        f"forecast {score:.0f}/100 maps to the {_percentile(score) * 100:.0f}th percentile of that platform",
-        f"{duration:.0f}s clip keeps {_retention_factor(duration, platform):.0%} of its reach",
-    )
+    if campaign_rate > 0:
+        assumptions = (
+            f"campaign pays ${campaign_rate:.2f} per 1000 verified views",
+            "campaign view counting is the platform's, not this estimate's",
+            f"forecast {score:.0f}/100 maps to the {_percentile(score) * 100:.0f}th percentile of that platform",
+            "country tiers and caps are not modelled; read the brief",
+        )
+    else:
+        assumptions = (
+            f"{platform} pays about ${rpm_mid:.2f} per 1000 views",
+            f"{region or 'US'} impressions are worth {factor:.0%} of a US impression",
+            f"forecast {score:.0f}/100 maps to the {_percentile(score) * 100:.0f}th percentile of that platform",
+            f"{duration:.0f}s clip keeps {_retention_factor(duration, platform):.0%} of its reach",
+        )
     return PayoutEstimate(
         platform=platform,
         region=(region or "US").upper(),
@@ -227,19 +245,40 @@ def estimate(
     *,
     duration: float = 40.0,
     platforms: tuple[str, ...] | list[str] | None = None,
+    rate_per_1k: float | None = None,
 ) -> PayoutReport:
-    """Estimate every platform and pick the one that pays best."""
+    """Estimate every platform and pick the one that pays best.
+
+    With ``rate_per_1k`` the estimate prices a campaign instead of ad RPM, so
+    the ranking answers "where do these views earn most under this brief"
+    rather than "which platform's ad market pays most".
+    """
     chosen = tuple(platforms or PLATFORM_RPM.keys())
     estimates = tuple(
         sorted(
-            (estimate_platform(score, platform, region, duration=duration) for platform in chosen),
+            (
+                estimate_platform(
+                    score, platform, region, duration=duration, rate_per_1k=rate_per_1k
+                )
+                for platform in chosen
+            ),
             key=lambda item: item.expected_usd,
             reverse=True,
         )
     )
     best = estimates[0] if estimates else None
     rationale: list[str] = []
-    if best:
+    if best and rate_per_1k and rate_per_1k > 0:
+        rationale.append(
+            f"priced at the campaign rate ${float(rate_per_1k):.2f}/1K views, "
+            f"not ad RPM: {best.platform} is expected to reach the most views"
+        )
+        if best.platform == "linkedin":
+            rationale.append(
+                "LinkedIn wins on reach here only because the campaign pays per view; "
+                "confirm the campaign accepts it before posting"
+            )
+    elif best:
         rationale.append(
             f"{best.platform} pays the most at about ${best.expected_usd:.2f} expected "
             f"(${best.usd_low:.2f}-${best.usd_high:.2f})"

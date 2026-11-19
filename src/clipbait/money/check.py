@@ -53,6 +53,9 @@ class CampaignRules:
     banned_terms: tuple[str, ...] = ()
     source: str = "defaults"
     explicit: bool = False
+    # What the campaign pays per 1000 verified views. None means "unknown":
+    # the queue then falls back to platform RPM medians and says so.
+    rate_per_1k: float | None = None
 
     @property
     def from_file(self) -> bool:
@@ -73,6 +76,7 @@ class CampaignRules:
             "banned_terms": list(self.banned_terms),
             "source": self.source,
             "explicit": self.explicit,
+            "rate_per_1k": self.rate_per_1k,
         }
 
 
@@ -110,12 +114,16 @@ def parse_campaign(text: str, *, source: str = "inline") -> CampaignRules:
     if match:
         banned = tuple(part.strip().lower() for part in match.group(1).split(",") if part.strip())
         explicit = True
+    rate = _number(text, r"rate_per_1k:\s*\$?(\d+(?:\.\d+)?)")
+    if rate is not None:
+        explicit = True
     return replace(
         rules,
         required_hashtags=tags,
         required_mention=mention,
         banned_terms=banned,
         explicit=explicit,
+        rate_per_1k=rate,
     )
 
 
@@ -171,6 +179,7 @@ def template() -> str:
         "# required_hashtags: #tag1 #tag2\n"
         "# required_mention: @handle\n"
         "# banned_terms: spoiler, early build\n"
+        "# rate_per_1k: 2.00\n"
         "\n"
         "# Always checked, no config needed: 1080x1920, ~30 fps, an audio track,\n"
         "# duration sanity, piracy/mod-menu words, caption under 2200 characters.\n"

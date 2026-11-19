@@ -55,6 +55,9 @@ class QueueItem:
     reasons: tuple[str, ...] = ()
     payout: PayoutReport | None = None
     created_at: str = ""
+    # Set when the estimate was priced from a campaign brief rather than from
+    # ad-market RPM medians, so the copy never mixes the two.
+    campaign_rate: float | None = None
 
     @property
     def slug(self) -> str:
@@ -88,6 +91,7 @@ class QueueItem:
             "best_time": self.best_time,
             "reasons": list(self.reasons),
             "payout": self.payout.as_dict() if self.payout else None,
+            "campaign_rate": self.campaign_rate,
             "copy": {
                 "title": self.title,
                 "caption": self.caption,
@@ -110,6 +114,7 @@ class Queue:
     items: tuple[QueueItem, ...] = ()
     total_expected_usd: float = 0.0
     posted_count: int = 0
+    rate_per_1k: float | None = None
     generated_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     @property
@@ -121,6 +126,12 @@ class Queue:
             "generated_at": self.generated_at,
             "count": self.count,
             "total_expected_usd": round(self.total_expected_usd, 2),
+            "pricing": (
+                "campaign rate"
+                if self.rate_per_1k
+                else "platform RPM medians (no campaign rate set)"
+            ),
+            "rate_per_1k": self.rate_per_1k,
             "posted_count": self.posted_count,
             "items": [item.as_dict() for item in self.items],
         }
@@ -176,14 +187,16 @@ def _render_ok(clip: dict) -> bool:
         return False
 
 
-def _to_item(clip: dict, project: dict) -> QueueItem | None:
+def _to_item(
+    clip: dict, project: dict, *, rate_per_1k: float | None = None
+) -> QueueItem | None:
     if clip.get("status") != "ready" or not _render_ok(clip):
         return None
     region = _clip_region(clip, project)
     source_platform = _clip_platform(clip, project)
     duration = _clip_duration(clip)
     score = _clip_score(clip)
-    report = estimate(score, region, duration=duration)
+    report = estimate(score, region, duration=duration, rate_per_1k=rate_per_1k)
     best = report.best
     if best is None:
         return None
@@ -220,6 +233,7 @@ def _to_item(clip: dict, project: dict) -> QueueItem | None:
         reasons=tuple(list(forecast.get("reasons") or [])[:3] + list(report.rationale)[:1]),
         payout=report,
         created_at=str(clip.get("created_at") or ""),
+        campaign_rate=float(rate_per_1k) if rate_per_1k else None,
     )
 
 
@@ -228,6 +242,7 @@ def build_queue(
     limit: int = 20,
     min_score: float = DEFAULT_MIN_SCORE,
     include_posted: bool = False,
+    rate_per_1k: float | None = None,
 ) -> Queue:
     """Rank every ready clip by expected revenue.
 
@@ -246,7 +261,7 @@ def build_queue(
             project = db.get_project(project_id) or {"title": "", "options": {}}
             projects[project_id] = project
 
-        item = _to_item(clip, project)
+        item = _to_item(clip, project, rate_per_1k=rate_per_1k)
         if item is None:
             continue
         if item.score < min_score:
@@ -266,10 +281,13 @@ def build_queue(
         items=trimmed,
         total_expected_usd=round(sum(item.expected_usd for item in trimmed), 2),
         posted_count=sum(1 for item in items if item.posted),
+        rate_per_1k=rate_per_1k,
     )
 
 
-def queue_item(clip_id: str, *, include_posted: bool = True) -> QueueItem | None:
+def queue_item(
+    clip_id: str, *, include_posted: bool = True, rate_per_1k: float | None = None
+) -> QueueItem | None:
     clip = db.get_clip(clip_id)
     if not clip:
         return None
@@ -278,7 +296,7 @@ def queue_item(clip_id: str, *, include_posted: bool = True) -> QueueItem | None
         return None
     if _uploaded(clip) and not include_posted:
         return None
-    return _to_item(clip, project)
+    return _to_item(clip, project, rate_per_1k=rate_per_1k)
 
 
 def mark_uploaded(clip_id: str, *, url: str | None = None, platform: str | None = None) -> dict | None:
@@ -311,7 +329,8 @@ def export_bundle(
     clip = db.get_clip(clip_id)
     if not clip:
         raise FileNotFoundError(f"clip {clip_id} not found")
-    item = queue_item(clip_id)
+    rules = load_campaign(campaign)
+    item = queue_item(clip_id, rate_per_1k=rules.rate_per_1k)
     if item is None:
         raise FileNotFoundError(f"clip {clip_id} is not rendered")
     source = storage.resolve(clip["render_path"])
@@ -345,6 +364,9 @@ def export_bundle(
                 "expected_usd": item.expected_usd,
                 "usd_range": [item.usd_low, item.usd_high],
                 "expected_views": item.expected_views,
+                "views_range": [item.views_low, item.views_high],
+                "rpm": item.rpm,
+                "pricing": "campaign" if item.campaign_rate else "platform-rpm",
                 "best_time": item.best_time,
                 "uploaded": item.posted,
                 "posted_url": item.posted_url,
@@ -358,7 +380,7 @@ def export_bundle(
         video,
         caption=caption,
         hook=item.hook,
-        rules=load_campaign(campaign),
+        rules=rules,
     )
     (target / "check.json").write_text(
         json.dumps(report.as_dict(), indent=2) + "\n", encoding="utf-8"

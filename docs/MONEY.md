@@ -80,6 +80,30 @@ State lives in `clips.meta.uploaded` (`{at, url, platform}`), so it survives
 restarts and travels with the clip through exports. `POST /clips/{id}/uploaded`
 is idempotent.
 
+### Campaign pricing
+
+Ad RPM answers "what is a view worth on this platform". A clipping campaign
+answers a different question: "what does *this brief* pay per verified view",
+usually a flat rate with no region factor. So the queue takes the rate from the
+brief and reprices everything with it:
+
+```bash
+clipbait queue --rate 2.00                                  # $2.00 per 1K views
+clipbait queue --campaign data/campaigns/clipmoney.md        # rate from the file
+```
+
+One line in the rules file is enough:
+
+```
+rate_per_1k: 2.00
+```
+
+With a rate set, `expected_usd = expected views / 1000 × rate`, the platform
+with the most expected reach wins instead of the highest ad RPM, and the output
+says which basis was used. Region and RPM assumptions are dropped, because the
+campaign does not pay by viewer country — and the estimate says country tiers
+and caps are not modelled, so the brief still has to be read.
+
 ### Export bundle
 
 `POST /clips/{id}/export` writes an upload-ready folder under
@@ -120,6 +144,7 @@ max_seconds: 60
 required_hashtags: #gta6 #clipmoney
 required_mention: @clipmoney
 banned_terms: spoiler, early build
+rate_per_1k: 2.00
 ```
 
 Always checked, no config: file exists, probes as video, 1080x1920, ~30 fps,
@@ -179,6 +204,10 @@ clipbait queue --json --limit 50 --min-score 60
 
 # Write bundles for every listed clip
 clipbait queue --export
+
+# Price against the campaign, not ad RPM
+clipbait queue --campaign data/campaigns/clipmoney.md
+clipbait queue --rate 2.00 --export
 
 # Record what you posted (hides it from the default queue)
 clipbait queue --mark clip_abc123 --url "https://tiktok.com/@me/video/1" \

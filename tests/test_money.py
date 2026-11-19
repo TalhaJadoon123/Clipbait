@@ -220,3 +220,49 @@ def test_export_rejects_an_unrendered_clip() -> None:
 def test_expected_views_helper_is_ordered() -> None:
     low, mid, high = expected_views(70, "tiktok", 38)
     assert 0 <= low <= mid <= high
+
+def test_a_campaign_rate_prices_the_clip_instead_of_ad_rpm() -> None:
+    """$2/1K views means views x 0.002, whatever the platform's ad market pays."""
+    clip = make_ready(score=80.0, start=1_000.0, end=1_040.0)
+
+    ad = build_queue(min_score=0.0)
+    campaign = build_queue(min_score=0.0, rate_per_1k=2.0)
+
+    ad_item = next(item for item in ad.items if item.clip_id == clip["id"])
+    paid_item = next(item for item in campaign.items if item.clip_id == clip["id"])
+
+    assert paid_item.rpm == pytest.approx(2.0)
+    assert paid_item.expected_usd == pytest.approx(
+        paid_item.expected_views / 1000.0 * 2.0, abs=0.02
+    )
+    assert paid_item.expected_usd != pytest.approx(ad_item.expected_usd)
+    assert campaign.rate_per_1k == 2.0
+    assert campaign.as_dict()["pricing"] == "campaign rate"
+    assert "no campaign rate" in ad.as_dict()["pricing"]
+    assert any("campaign rate" in reason for reason in paid_item.reasons)
+
+
+def test_campaign_rate_ignores_low_cpm_region_pricing() -> None:
+    """Campaigns pay per verified view; the viewer's country is the brief's problem."""
+    from clipbait.virality.payout import estimate
+
+    rich = estimate(70, "US", duration=40, rate_per_1k=3.0)
+    poor = estimate(70, "PK", duration=40, rate_per_1k=3.0)
+
+    assert poor.best.expected_usd == pytest.approx(rich.best.expected_usd)
+
+
+def test_export_bundle_reads_the_rate_from_the_campaign_file(tmp_path) -> None:
+    clip = make_ready(score=70.0, start=2_000.0, end=2_030.0)
+    rules = tmp_path / "campaign.md"
+    rules.write_text("rate_per_1k: 2.00\nmin_seconds: 7\nmax_seconds: 60\n", encoding="utf-8")
+
+    bundle = export_bundle(clip["id"], campaign=rules)
+
+    metadata = json.loads(
+        (storage.resolve(bundle["dir"]) / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert bundle["expected_usd"] == pytest.approx(
+        metadata["expected_views"] / 1000.0 * 2.0, abs=0.02
+    )
+    assert metadata["rpm"] == pytest.approx(2.0)

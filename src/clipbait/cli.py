@@ -365,15 +365,31 @@ def cmd_queue(args: argparse.Namespace) -> int:
         print(f"marked {args.mark} uploaded" + (f" -> {args.url}" if args.url else ""))
         return 0
 
+    # A campaign brief carries the rate that actually pays, so it wins over the
+    # platform RPM guess. ``--rate`` is the manual override for a brief that
+    # was read in Discord and not written to disk yet.
+    rate = args.rate
+    if rate is None and args.campaign:
+        from .money.check import load_campaign
+
+        rate = load_campaign(args.campaign).rate_per_1k
     queue = build_queue(
-        limit=args.limit, min_score=args.min_score, include_posted=args.include_posted
+        limit=args.limit,
+        min_score=args.min_score,
+        include_posted=args.include_posted,
+        rate_per_1k=rate,
     )
     if args.json:
         print(json.dumps(queue.as_dict(), indent=2))
     else:
+        basis = (
+            f"campaign rate ${rate:.2f}/1K views"
+            if rate
+            else "platform RPM medians; pass --rate or --campaign for real campaign pricing"
+        )
         print(
             f"{queue.count} ready clip(s) · ${queue.total_expected_usd:.2f} expected "
-            f"(range is per clip)"
+            f"({basis})"
         )
         if not queue.items:
             print("  nothing ready. render a clip first: clipbait process <url>")
@@ -473,7 +489,10 @@ def build_parser() -> argparse.ArgumentParser:
     queue_cmd.add_argument("--json", action="store_true")
     queue_cmd.add_argument("--export", action="store_true", help="write upload bundles")
     queue_cmd.add_argument(
-        "--campaign", help="campaign rules file used by the check inside each bundle"
+        "--campaign", help="campaign rules file: gates the check and sets the rate"
+    )
+    queue_cmd.add_argument(
+        "--rate", type=float, help="campaign payout per 1000 views, e.g. 2.0"
     )
     queue_cmd.add_argument("--mark", metavar="CLIP_ID", help="mark one clip uploaded")
     queue_cmd.add_argument("--url", help="posted URL for --mark")

@@ -142,6 +142,7 @@ clipbait live "https://www.youtube.com/watch?v=..." --content-threshold 3.2
 # What to post next, ranked by expected revenue
 clipbait queue
 clipbait queue --json --min-score 60
+clipbait queue --campaign data/campaigns/clipmoney.md   # price at the brief's rate
 clipbait queue --export
 clipbait queue --mark clip_abc123 --url "https://tiktok.com/@me/video/1"
 
