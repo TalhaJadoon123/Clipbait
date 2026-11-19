@@ -85,7 +85,44 @@ def test_chat_overlay_is_bounded_and_timed() -> None:
     overlay = build_chat_overlay(messages, 19.0, 40.0, max_messages=5)
     lines = [line for line in overlay.splitlines() if line.startswith("Dialogue: 2,")]
     assert len(lines) <= 5
-    assert "user0" in lines[0]
+    assert "message 0" in lines[0]
+
+
+def test_chat_overlay_drops_what_was_said_before_the_clip() -> None:
+    """A clamped pre-roll stacks stale lines on frame one; drop them instead."""
+    messages = [
+        ChatMessage(t=1.0, author="early", text="nothing to do with the clip"),
+        ChatMessage(t=30.5, author="fan", text="NO WAY"),
+    ]
+    overlay = build_chat_overlay(messages, 30.0, 45.0)
+    assert "nothing to do with the clip" not in overlay
+    assert "NO WAY" in overlay
+    assert "Dialogue: 2,0:00:00.50" in overlay
+
+
+def test_chat_overlay_lines_never_overlap() -> None:
+    """Three reactions at the same instant must not print on top of each other."""
+    messages = [
+        ChatMessage(t=5.0, author="a", text="first"),
+        ChatMessage(t=5.0, author="b", text="second"),
+        ChatMessage(t=5.0, author="c", text="third"),
+    ]
+    overlay = build_chat_overlay(messages, 0.0, 30.0, hold=2.0)
+    spans = []
+    for line in overlay.splitlines():
+        if not line.startswith("Dialogue: 2,"):
+            continue
+        _, start, end, *_ = line.split(",", 4)
+        spans.append((start, end))
+    assert len(spans) == 3
+    for (_, end), (start, _) in zip(spans, spans[1:], strict=False):
+        assert start >= end
+
+
+def test_chat_overlay_hides_handles_by_default() -> None:
+    overlay = build_chat_overlay([ChatMessage(t=1.0, author="loudmouth", text="WW")], 0.0, 20.0)
+    assert "loudmouth" not in overlay
+    assert "WW" in overlay
 
 
 def test_write_ass_combines_captions_hook_and_chat(tmp_path: Path) -> None:
@@ -103,7 +140,7 @@ def test_write_ass_combines_captions_hook_and_chat(tmp_path: Path) -> None:
     assert text.count("Dialogue: 0,") == len(WORDS)
     assert "Dialogue: 1," in text
     assert "Dialogue: 2," in text
-    assert "fan" in text
+    assert "CLIP IT" in text
 
 
 def test_empty_word_list_still_writes_a_header(tmp_path: Path) -> None:

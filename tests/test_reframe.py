@@ -55,9 +55,10 @@ def test_vertical_source_gets_a_blur_bed() -> None:
     assert plan.crop_xs == [0]
 
 
-def test_wide_source_without_vision_falls_back_to_centre() -> None:
+def test_wide_source_without_vision_keeps_the_whole_frame() -> None:
+    """16:9 gameplay must not be cropped to a guess when no face is found."""
     plan = plan_reframe(Path("x.mp4"), 0, 10, 1920, 1080, mode="auto")
-    assert plan.mode in {"track", "center"}
+    assert plan.mode in {"track", "blur"}
     assert len(plan.crop_xs) >= 1
     assert all(x >= 0 for x in plan.crop_xs)
 

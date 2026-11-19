@@ -148,6 +148,7 @@ class LiveRunner:
                     post_roll=self.options.post_roll,
                     cooldown=self.options.cooldown,
                     threshold=self.options.content_threshold,
+                    language=self.options.language,
                 )
                 threading.Thread(
                     target=self._content_loop,
@@ -445,6 +446,7 @@ class LiveRunner:
                         "chat_overlay": self.options.chat_overlay,
                         "caption_preset": self.options.caption_preset,
                         "reframe_mode": self.options.reframe_mode,
+                        "language": self.options.language,
                         "region": self.options.region,
                         "platform": self.options.platform,
                     },

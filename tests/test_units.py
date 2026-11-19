@@ -618,8 +618,13 @@ def test_plan_reframe_modes(monkeypatch):
     assert explicit.mode == "blur"
 
     wide = plan_reframe(Path("v.mp4"), 0, 10, 320, 180, mode="auto")
-    assert wide.mode == "center"
-    assert wide.note == "no faces detected; centre crop"
+    assert wide.mode == "blur"
+    assert "blur bed" in wide.note
+
+    # A crop that only trims a little is still the better answer.
+    slight = plan_reframe(Path("v.mp4"), 0, 10, 800, 1000, mode="auto")
+    assert slight.mode == "center"
+    assert slight.note == "no faces detected; centre crop"
 
     monkeypatch.setattr(
         "clipbait.reframe.sample_faces",
@@ -637,8 +642,8 @@ def test_plan_reframe_modes(monkeypatch):
     assert split.split is not None
 
     monkeypatch.setattr("clipbait.reframe.sample_faces", lambda *a, **k: [])
-    assert plan_reframe(Path("v.mp4"), 0, 4, 1920, 1080, mode="split").mode == "center"
-    assert plan_reframe(Path("v.mp4"), 0, 4, 1920, 1080, mode="track").mode == "center"
+    assert plan_reframe(Path("v.mp4"), 0, 4, 1920, 1080, mode="split").mode == "blur"
+    assert plan_reframe(Path("v.mp4"), 0, 4, 1920, 1080, mode="track").mode == "blur"
 
 
 def test_narrow_source_is_padded_by_geometry(monkeypatch):

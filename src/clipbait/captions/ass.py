@@ -249,26 +249,52 @@ def build_hook(title: str, duration: float = 3.6) -> str:
     return event
 
 
-def build_chat_overlay(messages: list[ChatMessage], start: float, end: float, max_messages: int = 7) -> str:
-    """Burn the chat reaction into the top third: proof the crowd went wild."""
+def build_chat_overlay(
+    messages: list[ChatMessage],
+    start: float,
+    end: float,
+    max_messages: int = 3,
+    *,
+    hold: float = 2.0,
+    show_authors: bool = False,
+) -> str:
+    """One short chat reaction at a time: proof the crowd moved.
+
+    Three rules keep this readable on a phone instead of a wall of text:
+
+    * messages from before the clip are dropped, not clamped to zero (a
+      clamped pre-roll stacks five stale lines on the first frame),
+    * lines never overlap in time, so each one can be read,
+    * handles are off by default. Names read as spam at 1080 wide; the words
+      are what carry the reaction.
+    """
     if not messages:
         return ""
     events: list[str] = []
     span = max(1.0, end - start)
-    usable = messages[:max_messages]
-    for message in usable:
+    cursor = 0.0
+    shown_count = 0
+    for message in messages:
+        if shown_count >= max_messages:
+            break
+        if message.t < start:
+            continue  # said before the clip began: not this moment
         offset = max(0.0, message.t - start)
-        if offset > span - 1.0:
+        at = max(offset, cursor)
+        if at > span - 1.0:
             continue
-        shown = escape_text(message.text)[:72]
-        author = escape_text(message.author)[:18]
+        shown = escape_text(message.text.strip())[:44]
         if not shown:
             continue
-        text = f"{{\\c&H00D4FFFF&}}{author}: {{\\c&H00FFFFFF&}}{shown}"
+        text = shown
+        if show_authors and message.author:
+            text = f"{{\\c&H00D4FFFF&}}{escape_text(message.author)[:16]}: {{\\c&H00FFFFFF&}}{shown}"
         events.append(
-            f"Dialogue: 2,{ass_time(offset)},{ass_time(min(span, offset + 2.6))},Chat,,0,0,0,,"
+            f"Dialogue: 2,{ass_time(at)},{ass_time(min(span, at + hold))},Chat,,0,0,0,,"
             r"{\fad(120,180)}" + text
         )
+        cursor = at + hold
+        shown_count += 1
     return "\n".join(events)
 
 

@@ -1246,3 +1246,40 @@ def test_chat_after_content_still_respects_the_cooldown(monkeypatch):
     runner._on_candidate(candidate(), "chat", 40.0)
 
     assert len(db.list_moments(monitor["id"])) == 1
+
+
+def test_a_live_clip_inherits_the_stream_language(monkeypatch):
+    """An English stream must not be captioned in whatever whisper guessed."""
+    monitor = make_monitor(language="en")
+    runner = LiveRunner(monitor)
+    runner.recorder = FakeRecorder(window=(0.0, 60.0))
+    monkeypatch.setattr(runner, "elapsed", lambda: 1000.0)
+    monkeypatch.setattr(
+        "clipbait.jobs.submit",
+        lambda kind, fn, **kwargs: {"id": "job_1"},
+    )
+    created: dict = {}
+    real_create = db.create_project
+
+    def spy(payload):
+        project = real_create(payload)
+        created["project"] = project
+        return project
+
+    monkeypatch.setattr("clipbait.db.create_project", spy)
+
+    spike = dataclasses.replace(candidate(), start=2.0, end=12.0, trigger_at=12.0)
+    moment = db.create_moment(
+        {
+            "monitor_id": monitor["id"],
+            "start": spike.start,
+            "end": spike.end,
+            "score": spike.score,
+            "signal": spike.signal.model_dump(),
+            "messages": [m.model_dump() for m in spike.messages],
+        }
+    )
+
+    runner._capture(spike, moment, "lang")
+
+    assert (created["project"].get("options") or {}).get("language") == "en"

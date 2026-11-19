@@ -230,6 +230,10 @@ class MonitorOptions(BaseModel):
     content_threshold: float = Field(default=2.5, ge=0.5, le=12)
     content_interval: int = Field(default=18, ge=8, le=120)
     speech_window: int = Field(default=32, ge=12, le=120)
+    # "auto" lets whisper guess once for the whole window. Pin it for a stream
+    # known to be in one language: a guess on music-heavy gameplay audio can
+    # come back as Portuguese and caption an English stream in the wrong words.
+    language: str = "auto"
 
 
 class LiveMonitor(BaseModel):

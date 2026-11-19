@@ -90,6 +90,50 @@ def _interpolate(samples: list[FaceSample], fps: float, frames: int) -> tuple[li
     return xs, True
 
 
+def _no_subject_plan(
+    *,
+    resolved: str,
+    source_w: int,
+    source_h: int,
+    source_aspect: float,
+    target_aspect: float,
+    out_w: int,
+    out_h: int,
+    fps: float,
+    max_x: int,
+) -> ReframePlan:
+    """What to do when there is nothing to follow.
+
+    A face tracker that finds no faces knows one thing: it does not know where
+    the subject is. Cropping anyway then guesses, and for gameplay the guess is
+    always wrong - a 16:9 game cut to 9:16 throws away two thirds of the
+    picture, so the car, the character and the action all leave the frame while
+    the centre stays. Showing the whole frame on a blur bed keeps what the
+    stream actually showed; a modest crop is still fine when little is lost.
+    """
+    if source_aspect > target_aspect * 1.6:
+        return ReframePlan(
+            mode="blur",
+            out_w=out_w,
+            out_h=out_h,
+            source_w=source_w,
+            source_h=source_h,
+            crop_xs=[max_x // 2],
+            fps=fps,
+            note="no subject to follow; whole frame on a blur bed",
+        )
+    return ReframePlan(
+        mode="center",
+        out_w=out_w,
+        out_h=out_h,
+        source_w=source_w,
+        source_h=source_h,
+        crop_xs=[max_x // 2],
+        fps=fps,
+        note="no faces detected; centre crop",
+    )
+
+
 def plan_reframe(
     video: Path,
     start: float,
@@ -161,15 +205,16 @@ def plan_reframe(
         resolved = "track"
 
     if not samples:
-        return ReframePlan(
-            mode="center",
-            out_w=out_w,
-            out_h=out_h,
+        return _no_subject_plan(
+            resolved=resolved,
             source_w=source_w,
             source_h=source_h,
-            crop_xs=[max_x // 2],
+            source_aspect=source_aspect,
+            target_aspect=target_aspect,
+            out_w=out_w,
+            out_h=out_h,
             fps=fps,
-            note="no faces detected; centre crop",
+            max_x=max_x,
         )
 
     centres, _ = _interpolate(samples, fps, frames)

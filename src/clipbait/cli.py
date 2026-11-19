@@ -194,6 +194,7 @@ def cmd_live(args: argparse.Namespace) -> int:
         content_threshold=args.content_threshold,
         max_clips=args.max_clips,
         buffer_seconds=args.buffer_seconds,
+        language=args.language,
     )
     monitor = db.create_monitor(
         {
@@ -482,6 +483,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     live_cmd.add_argument(
         "--max-clips", type=int, default=8, help="stop clipping after this many moments"
+    )
+    live_cmd.add_argument(
+        "--language",
+        default="auto",
+        help="speech language of the stream, e.g. en; auto guesses once per window",
     )
     live_cmd.add_argument(
         "--buffer-seconds",
