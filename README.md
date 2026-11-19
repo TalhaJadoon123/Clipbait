@@ -63,6 +63,8 @@ docker compose up --build
 
 The compose file mounts `./data` so projects, the SQLite database and rendered clips survive restarts. It runs as UID/GID `1000` by default so the bind mount is writable; if your user differs, export `CLIPBAIT_UID=$(id -u) CLIPBAIT_GID=$(id -g)` first. Prefer a different port? `CLIPBAIT_PORT=9000 docker compose up`.
 
+Running the image directly with `docker run` instead of Compose? Add `--user "$(id -u):$(id -g)"` whenever you bind-mount a host directory, or the app (which runs as UID 10001) cannot write to it. Anonymous volumes need no flags.
+
 ### Local
 
 Requirements: **Python 3.11+**, **ffmpeg/ffprobe**, **yt-dlp** (for URL sources). Node is only needed if you change the UI.
