@@ -1,0 +1,61 @@
+Clipbait
+Copyright (c) 2026 Clipbait contributors
+Licensed under the MIT License (see LICENSE).
+
+
+Third-party inspiration
+=======================
+
+Clipbait reimplements techniques it learned from other open-source projects.
+No source files were copied wholesale; where an approach was adapted, the
+original project is credited here.
+
+1. mutonby/openshorts — MIT
+   https://github.com/mutonby/openshorts
+   Adapted ideas: ASS subtitle structure with word-level karaoke timing, the
+   `sendcmd` virtual-camera crop technique, split-screen and blur-bed layouts,
+   and the shape of the FastAPI + SQLite job model. Clipbait's implementation
+   was written independently and reorganised into the modules under
+   `src/clipbait/{captions,reframe,render,live}`.
+
+2. Anil-matcha/AI-Youtube-Shorts-Generator — MIT
+   https://github.com/Anil-matcha/AI-Youtube-Shorts-Generator
+   Adapted ideas: chunked highlight-scoring prompts and the score dimensions
+   (hook, emotion, value, share) used in `src/clipbait/analyze`.
+
+3. FujiwaraChoki/supoclip — design inspiration only
+   https://github.com/FujiwaraChoki/supoclip
+   The project ships a non-commercial license. Clipbait used it strictly as a
+   product/UX reference. No code, assets, prompts or copy were copied.
+
+Full MIT license texts for items 1 and 2 are available in their repositories.
+
+
+Runtime dependencies
+====================
+
+Clipbait links against these projects at runtime. They are installed from
+PyPI or the system package manager, not vendored, and remain under their own
+licenses:
+
+  FastAPI, Starlette, Pydantic, Uvicorn, HTTPX, python-multipart,
+  python-dotenv                                  — MIT / BSD (see packages)
+  FFmpeg and FFprobe                             — LGPL/GPL depending on build
+  yt-dlp                                         — Unlicense
+  faster-whisper (optional)                      — MIT
+  CTranslate2 (optional)                         — MIT
+  OpenCV (optional)                              — Apache-2.0
+  pytchat (optional)                             — MIT
+  React, React DOM, React Router, Vite           — MIT
+
+Clipbait does not ship fonts, music, stock footage or any third-party media.
+Rendered clips contain only the source video you provide.
+
+
+Content and trademarks
+======================
+
+Product names, platform names, meme formats and market slang referenced in
+`src/clipbait/virality/` are used descriptively. No affiliation with or
+endorsement by any platform or brand is implied. Meme formats are generic
+narrative structures, not copyrighted assets.

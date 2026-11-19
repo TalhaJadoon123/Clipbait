@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+apps/web/.vite/
+# The built SPA is committed so `pip install -e . && clipbait serve` works
+# without a Node toolchain. Rebuild with `make web`.
+!apps/web/dist/
+!apps/web/dist/**
+
+# Runtime data (video, sqlite, models, live buffers)
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Local config
+.env
+.env.local
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
