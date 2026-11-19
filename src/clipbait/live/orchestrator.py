@@ -124,6 +124,7 @@ class LiveRunner:
             {"type": "status", "status": "live", "provider": self.chat.name},
         )
 
+        failed = False
         try:
             for message in self.chat.messages():
                 if self._stop.is_set():
@@ -142,6 +143,7 @@ class LiveRunner:
                     self._flush()
         except Exception as exc:  # noqa: BLE001
             log.exception("monitor %s crashed", self.monitor_id)
+            failed = True
             db.update_monitor(
                 self.monitor_id, status="failed", error=f"{type(exc).__name__}: {exc}"[:400]
             )
@@ -150,7 +152,9 @@ class LiveRunner:
             self._flush(force=True)
             if self.recorder:
                 self.recorder.stop()
-            if not self._stop.is_set():
+            # A crash already recorded its own terminal state; do not mask it
+            # with a healthy-looking "stopped".
+            if not self._stop.is_set() and not failed:
                 db.update_monitor(self.monitor_id, status="stopped", stopped_at=utcnow())
             _publish(self.monitor_id, {"type": "status", "status": "stopped"})
 
