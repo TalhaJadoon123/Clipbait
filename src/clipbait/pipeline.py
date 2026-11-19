@@ -524,6 +524,101 @@ def render_clip_record(
     return updated or clip
 
 
+def _live_description(origin: str) -> str:
+    if origin == "manual":
+        return "Hand-picked moment from the stream."
+    if origin == "chat":
+        return "Auto-cut from a live chat spike."
+    return "Auto-cut from an on-stream moment."
+
+
+def hms(seconds: float) -> str:
+    """1:02:03 / 2:03 - the shape a streamer reads off the timeline."""
+    total = max(0, int(round(float(seconds or 0.0))))
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
+
+
+def _cut_local(source: Path, start: float, end: float, target: Path) -> Path:
+    """Cut one window out of a local file, re-encoding so the cut is exact."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    media.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-ss", f"{max(0.0, start):.3f}",
+            "-i", str(source),
+            "-t", f"{max(0.5, end - start):.3f}",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-c:a", "aac", "-b:a", "160k",
+            "-movflags", "+faststart",
+            str(target),
+        ],
+        timeout=1800,
+    )
+    if not target.exists() or target.stat().st_size < 10_000:
+        raise media.MediaError("cut produced no usable file")
+    return target
+
+
+def grab_moment(
+    project_id: str,
+    start: float,
+    end: float,
+    *,
+    title: str | None = None,
+    reason: str | None = None,
+    job_id: str | None = None,
+) -> dict:
+    """Cut exactly the window a human pointed at, then clip it like any other.
+
+    Detection guesses. A person watching the stream does not have to: they know
+    the timestamp of the thing worth posting. This fetches only that window (a
+    few seconds of transfer even on a two-hour VOD), then runs the same
+    transcript, caption, reframe and copy path a detected moment gets - so the
+    hand-picked clip is not a second-class citizen.
+    """
+    project = db.get_project(project_id)
+    if not project:
+        raise ValueError(f"project {project_id} not found")
+    start = max(0.0, float(start))
+    end = max(start + 1.0, float(end))
+    target = storage.project_dir(project_id) / "source" / "video.mp4"
+
+    existing = project.get("source_path")
+    if existing:
+        jobs.progress(job_id, 0.05, "fetching", f"Cutting {hms(start)}-{hms(end)}")
+        _cut_local(storage.resolve(existing), start, end, target)
+    else:
+        url = project.get("source_url")
+        if not url:
+            raise ValueError("project has neither a local source nor a URL")
+        from .ingest import fetch_section
+
+        jobs.progress(job_id, 0.05, "fetching", f"Fetching {hms(start)}-{hms(end)}")
+        fetch_section(url, start, end, target)
+
+    db.update(
+        "projects",
+        project_id,
+        {
+            "source_path": storage.relative(target),
+            "duration": end - start,
+            "status": "rendering",
+        },
+    )
+    moment = {
+        "title": title or f"Clip at {hms(start)}",
+        "origin": "manual",
+        "analysis": "manual-grab",
+        "score": 6.0,
+        "reason": reason or f"Hand-picked {hms(start)}-{hms(end)} of the stream.",
+        "messages": [],
+    }
+    result = process_live_moment(project_id, moment, job_id=job_id)
+    return db.get_clip(result["clip_id"]) or {}
+
+
 def _speech_copy(transcript: Transcript) -> tuple[str, str]:
     """The strongest spoken line in the clip, and the full spoken text.
 
@@ -634,7 +729,7 @@ def process_live_moment(
             "hook": chosen["hook"] if chosen else (moment.get("hook") or title)[:120],
             "description": chosen["description"]
             if chosen
-            else ("Auto-cut from an on-stream moment." if origin != "chat" else "Auto-cut from a live chat spike."),
+            else _live_description(origin),
             "hashtags": chosen["hashtags"] if chosen else ["live", "shorts", "reels", "clips"],
             "start": 0.0,
             "end": max(1.0, info.duration),
@@ -653,7 +748,8 @@ def process_live_moment(
                 "origin": origin,
                 "signal": moment.get("signal"),
                 "chat": [message.model_dump() for message in chat] if options.chat_overlay else [],
-                "analysis": "live-content" if origin != "chat" else "live-chat-spike",
+                "analysis": moment.get("analysis")
+                or ("live-content" if origin != "chat" else "live-chat-spike"),
                 "transcriber": transcript.provider,
                 "region": region.code,
                 "platform": options.platform,

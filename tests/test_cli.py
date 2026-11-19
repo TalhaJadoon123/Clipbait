@@ -177,6 +177,7 @@ def live_args(source: str = "demo", **overrides) -> argparse.Namespace:
         "content_threshold": 2.5,
         "max_clips": 8,
         "buffer_seconds": 420,
+        "language": "auto",
     }
     data.update(overrides)
     return argparse.Namespace(**data)
@@ -345,11 +346,13 @@ def test_live_content_flags_reach_the_monitor_options(monkeypatch, tmp_path):
         content_threshold=4.5,
         max_clips=8,
         buffer_seconds=420,
+        language="en",
     )
     assert cli.cmd_live(args) == 0
     options = started[0]["options"]
     assert options["content_detection"] is False
     assert options["content_threshold"] == 4.5
+    assert options["language"] == "en"
 
 
 def _ready_clip(score: int = 80) -> dict:
@@ -417,3 +420,27 @@ def test_parser_exposes_content_and_queue_flags():
     assert queue.limit == 5
     assert queue.export is True
     assert queue.min_score == 70.0
+
+
+@pytest.mark.parametrize(
+    ("text", "seconds"),
+    [
+        ("75", 75.0),
+        ("1:15", 75.0),
+        ("0:01:15", 75.0),
+        ("2:03:04.5", 7384.5),
+        ("-5", 0.0),
+    ],
+)
+def test_grab_timestamp_parsing(text, seconds):
+    from clipbait.cli import parse_timestamp
+
+    assert parse_timestamp(text) == pytest.approx(seconds)
+
+
+def test_grab_timestamp_rejects_nonsense():
+    from clipbait.cli import parse_timestamp
+
+    for bad in ("", "abc", "1:2:3:4"):
+        with pytest.raises(ValueError):
+            parse_timestamp(bad)

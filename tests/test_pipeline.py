@@ -642,3 +642,52 @@ def test_a_chat_clip_is_named_by_what_the_streamer_said(transcript, monkeypatch)
     assert clip["quote"] and "no way" in clip["quote"].lower()
     assert "wash your hands" not in (clip["hook"] or "").lower()
     assert "wash your hands" not in (clip["description"] or "").lower()
+
+
+def test_grab_cuts_exactly_what_the_human_pointed_at(transcript, monkeypatch):
+    """A person who saw the moment should not have to out-guess the detector."""
+    project = make_project(None, source_url="https://example.com/v.mp4")
+    fixed_transcriber(monkeypatch, transcript)
+    captured: dict = {}
+
+    def fake_fetch(url, start, end, target, *, on_progress=None):
+        captured["window"] = (url, start, end)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        make_video(target, seconds=4, size="320x180")
+        return target
+
+    monkeypatch.setattr("clipbait.ingest.fetch_section", fake_fetch)
+
+    def fake_render(clip_id, *, transcript=None, on_progress=None):
+        captured["clip"] = db.get_clip(clip_id)
+        return captured["clip"]
+
+    monkeypatch.setattr(pipeline, "render_clip_record", fake_render)
+
+    clip = pipeline.grab_moment(project["id"], 754.0, 794.0, title="The thing I saw")
+
+    assert captured["window"] == ("https://example.com/v.mp4", 754.0, 794.0)
+    assert clip["meta"]["analysis"] == "manual-grab"
+    assert clip["meta"]["origin"] == "manual"
+    assert clip["title"] == "The thing I saw"
+    assert clip["reason"] == "Hand-picked 12:34-13:14 of the stream."
+
+
+def test_grab_cuts_from_a_local_file_without_a_url(tmp_path, transcript, monkeypatch):
+    source = make_video(tmp_path / "full.mp4", seconds=8, size="320x180")
+    project = make_project(source)
+    fixed_transcriber(monkeypatch, transcript)
+
+    def fake_render(clip_id, *, transcript=None, on_progress=None):
+        return db.get_clip(clip_id)
+
+    monkeypatch.setattr(pipeline, "render_clip_record", fake_render)
+
+    clip = pipeline.grab_moment(project["id"], 2.0, 5.0, reason="local cut")
+
+    target = storage.resolve(db.get_project(project["id"])["source_path"])
+    assert target.name == "video.mp4"
+    assert target.exists() and target.stat().st_size > 0
+    info = pipeline.media.probe(target)
+    assert 2.5 <= info.duration <= 3.6
+    assert clip["reason"] == "local cut"

@@ -283,6 +283,26 @@ the upside; the expected total is the number to use.
 
 ---
 
+## The operator-in-the-loop pass
+
+Detection can be wrong in both directions, and a campaign clip has to be an
+actual moment, not a random 40 seconds of gameplay. The reliable route is the
+one a human clipper already uses: watch, note the timestamp, cut exactly that.
+
+```bash
+clipbait grab "<vod-or-live-url>" --at 1:24:30 --seconds 40 \
+  --language en --campaign data/campaigns/kai-gta6.md --export
+```
+
+`--at` accepts `75`, `1:15` and `0:01:15`; `--seconds` is the length of the
+window. Only that window is fetched, so the cost is the clip, not the VOD. The
+grab runs the same transcript → hook → caption → reframe → forecast path as a
+detected moment, then writes the export bundle and prints the check result.
+
+Use it after the stream ends on the VOD: timestamps there are exact, the
+thumbnail strip tells you where the moment is, and nothing about the result
+depends on the detector's opinion.
+
 ## The unattended pass
 
 `scripts/earn.sh` chains the whole pipeline when nobody is watching the terminal:

@@ -139,6 +139,11 @@ clipbait live "https://www.twitch.tv/somechannel" --region BR --platform reels
 clipbait live "https://www.youtube.com/watch?v=..." --no-content
 clipbait live "https://www.youtube.com/watch?v=..." --content-threshold 3.2
 
+# You saw the moment yourself: cut exactly that window, nothing else
+clipbait grab "https://www.youtube.com/watch?v=..." --at 1:24:30 --seconds 40 \
+  --campaign data/campaigns/kai-gta6.md --export
+clipbait grab ./local-capture.mp4 --at 0:12 --seconds 30 --language en
+
 # What to post next, ranked by expected revenue
 clipbait queue
 clipbait queue --json --min-score 60
@@ -311,6 +316,22 @@ clipbait live demo --threshold 2.5          # chat + on-stream detection
 clipbait live <url> --no-content            # chat only
 clipbait queue                              # what to post, where, for how much
 ```
+
+### When you saw it yourself
+
+Detection is a guess about what matters. A person watching the stream is not
+guessing, so Clipbait also takes an exact window:
+
+```bash
+clipbait grab "https://www.youtube.com/watch?v=..." --at 1:24:30 --seconds 40 \
+  --language en --campaign data/campaigns/kai-gta6.md --export
+```
+
+That fetches only those 40 seconds (yt-dlp range support, so a 40s grab of a
+three-hour VOD costs 40s of transfer), transcribes them, cuts the strongest
+spoken line into the hook, burns captions, and writes the same upload bundle a
+detected moment gets. It is the fastest honest route from "that was funny" to a
+postable file, and it works on a finished VOD as well as a live capture.
 
 The demo generates a 4-minute synthetic stream locally, spikes chat three times, and renders clips end-to-end with chat overlay. It is the fastest way to verify the whole live path without a real broadcast.
 

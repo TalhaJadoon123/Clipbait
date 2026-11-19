@@ -170,6 +170,89 @@ def cmd_process(args: argparse.Namespace) -> int:
     return 0
 
 
+# ----------------------------------------------------------------------- grab
+
+
+def parse_timestamp(text: str) -> float:
+    """Accept '75', '1:15', '0:01:15' - whatever the timeline showed."""
+    raw = str(text or "").strip()
+    if not raw:
+        raise ValueError("empty timestamp")
+    sign = -1.0 if raw.startswith("-") else 1.0
+    raw = raw.lstrip("+-")
+    parts = raw.split(":")
+    if len(parts) > 3:
+        raise ValueError(f"not a timestamp: {text}")
+    total = 0.0
+    for part in parts:
+        if part == "":
+            raise ValueError(f"not a timestamp: {text}")
+        total = total * 60.0 + float(part)
+    return max(0.0, sign * total)
+
+
+def cmd_grab(args: argparse.Namespace) -> int:
+    """Clip exactly the moment a human pointed at."""
+    from .ingest import source_kind_for
+    from .pipeline import grab_moment, hms
+
+    settings = get_settings()
+    settings.ensure_dirs()
+    db.init_db()
+
+    try:
+        start = parse_timestamp(args.at)
+    except ValueError as exc:
+        print(f"bad --at: {exc}", file=sys.stderr)
+        return 2
+    end = start + max(3.0, float(args.seconds))
+
+    target = args.source
+    is_file = Path(target).expanduser().exists()
+    options = ProjectOptions(
+        clips=1,
+        target_seconds=int(max(15, min(180, end - start))),
+        caption_preset=args.preset,
+        reframe_mode=args.reframe,
+        captions=not args.no_captions,
+        hook_titles=not args.no_hooks,
+        language=args.language,
+        region=args.region,
+        platform=args.platform,
+    )
+    project = db.create_project(
+        {
+            "title": args.title or f"Moment at {hms(start)}",
+            "source_kind": "local" if is_file else source_kind_for(target),
+            "source_url": None if is_file else target,
+            "source_path": storage.relative(Path(target).expanduser()) if is_file else None,
+            "duration": end - start,
+            "options": options.model_dump(),
+        }
+    )
+    print(f"Grabbing {hms(start)}-{hms(end)} of {target}")
+    try:
+        clip = grab_moment(project["id"], start, end, title=args.title, reason=args.reason)
+    except Exception as exc:  # noqa: BLE001 - the CLI is the error surface here
+        print(f"\nFailed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"  clip:   {clip['id']}  ({clip.get('status')})")
+    print(f"  title:  {clip['title']}")
+    if clip.get("quote"):
+        print(f"  quote:  {clip['quote']}")
+    if clip.get("render_path"):
+        print(f"  file:   {storage.resolve(clip['render_path'])}")
+    if args.export:
+        from .money import export_bundle
+
+        bundle = export_bundle(clip["id"], campaign=args.campaign)
+        print(f"  export: {bundle['dir']}  (check {bundle['check']['passed'] and 'PASS' or 'FAIL'})")
+    if args.json:
+        print(json.dumps(clip, default=str, indent=2))
+    return 0
+
+
 # ----------------------------------------------------------------------- live
 
 
@@ -456,6 +539,26 @@ def build_parser() -> argparse.ArgumentParser:
     process.add_argument("--no-llm", action="store_true", help="force the offline ranker")
     process.add_argument("--json", action="store_true", help="print the result as JSON")
     process.set_defaults(func=cmd_process)
+
+    grab = sub.add_parser("grab", help="clip one exact moment you saw, by timestamp")
+    grab.add_argument("source", help="path, YouTube/Vimeo URL, or direct video URL")
+    grab.add_argument("--at", required=True, help="start of the moment: 75, 1:15, 0:01:15")
+    grab.add_argument("--seconds", type=float, default=40.0, help="how long the clip runs")
+    grab.add_argument("--title", help="hook for the clip; derived from speech when omitted")
+    grab.add_argument("--reason", help="why it is worth posting, stored with the clip")
+    grab.add_argument("--preset", default="default")
+    grab.add_argument("--reframe", default="auto", choices=["auto", "center", "blur", "split"])
+    grab.add_argument("--language", default="auto", help="speech language, e.g. en")
+    grab.add_argument("--region", default="US")
+    grab.add_argument(
+        "--platform", default="tiktok", choices=["tiktok", "reels", "shorts", "linkedin", "x"]
+    )
+    grab.add_argument("--campaign", help="campaign rules file for the export check")
+    grab.add_argument("--export", action="store_true", help="write an upload-ready bundle")
+    grab.add_argument("--no-captions", action="store_true")
+    grab.add_argument("--no-hooks", action="store_true")
+    grab.add_argument("--json", action="store_true", help="print the clip as JSON")
+    grab.set_defaults(func=cmd_grab)
 
     live_cmd = sub.add_parser("live", help="watch live chat and clip the spikes")
     live_cmd.add_argument("source", help="YouTube/Twitch URL, or 'demo'")
