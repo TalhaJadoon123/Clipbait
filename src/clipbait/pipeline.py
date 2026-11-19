@@ -8,10 +8,19 @@ can explain exactly where a job died.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from . import analyze, db, jobs, media, storage, transcribe
 from .captions.presets import get_preset
 from .config import get_settings
+from .memes import (
+    InsertConfig,
+    MemeRequest,
+    cache_dir,
+    get_meme_provider,
+    plan_inserts,
+    prepare_insert,
+)
 from .reframe import plan_reframe
 from .render import render_clip
 from .schema import ChatMessage, Highlight, ProjectOptions, Transcript
@@ -237,9 +246,82 @@ def _create_clip(
                 "platform": options.platform,
                 "variants": variants,
                 "forecast": forecast_data,
+                "meme_inserts": options.meme_inserts,
+                "meme_insert_seconds": options.meme_insert_seconds,
+                "meme_max_inserts": options.meme_max_inserts,
             },
         }
     )
+
+
+def _clip_inserts(
+    clip: dict,
+    transcript: Transcript,
+    plan,
+    *,
+    on_progress=None,
+) -> tuple[list[tuple[Path, float, float]], list[dict]]:
+    """Plan, generate and normalise the meme b-roll inserts for one clip.
+
+    Returns ``(inserts, records)``. ``inserts`` feeds :func:`render_clip`; a
+    provider or ffmpeg failure degrades to "no insert" rather than a failed
+    render, so it is safe to call on every clip. An empty list is the common,
+    correct answer.
+    """
+    meta = clip.get("meta") or {}
+    if not meta.get("meme_inserts"):
+        return [], []
+    provider = get_meme_provider()
+    if provider is None:
+        return [], []
+
+    config = InsertConfig(
+        max_inserts=int(meta.get("meme_max_inserts") or 2),
+        insert_seconds=float(meta.get("meme_insert_seconds") or 2.0),
+    )
+    planned = plan_inserts(transcript.words, clip["start"], clip["end"], config)
+    if not planned:
+        return [], []
+
+    fps = int(round(plan.fps)) or 30
+    out_dir = storage.clip_dir(clip["project_id"], clip["id"]) / "inserts"
+    cache = cache_dir()
+    inserts: list[tuple[Path, float, float]] = []
+    records: list[dict] = []
+    for index, insert in enumerate(planned):
+        if on_progress:
+            on_progress(0.02, f"meme b-roll {index + 1}/{len(planned)}")
+        request = MemeRequest(
+            prompt=insert.prompt,
+            duration=insert.duration,
+            width=plan.out_w,
+            height=plan.out_h,
+            fps=fps,
+        )
+        try:
+            asset = provider.generate(request, cache)
+            if asset is None:
+                continue
+            prepared = prepare_insert(
+                asset,
+                out_dir / f"insert-{index}.mp4",
+                width=plan.out_w,
+                height=plan.out_h,
+                duration=insert.duration,
+                fps=fps,
+            )
+        except Exception as exc:  # noqa: BLE001 - a bad insert must not fail the clip
+            log.warning("meme insert %d skipped: %s", index, exc)
+            continue
+        inserts.append((prepared, insert.start, insert.end))
+        records.append(
+            {
+                **insert.as_dict(),
+                "path": storage.relative(prepared),
+                "provider": provider.name,
+            }
+        )
+    return inserts, records
 
 
 def render_clip_record(
@@ -277,6 +359,9 @@ def render_clip_record(
 
     preset = get_preset(clip.get("caption_preset", "default"))
     out_path = storage.clip_dir(clip["project_id"], clip_id) / "clip.mp4"
+    inserts, insert_records = _clip_inserts(
+        clip, transcript, plan, on_progress=on_progress
+    )
     result = render_clip(
         source,
         out_path,
@@ -288,6 +373,7 @@ def render_clip_record(
         captions=bool(clip.get("captions", True)),
         hook=(clip.get("hook") or clip.get("title")) if clip.get("hook_titles", True) else None,
         chat=chat,
+        inserts=inserts or None,
         on_progress=on_progress,
     )
     updated = db.update(
@@ -304,6 +390,8 @@ def render_clip_record(
                 "duration": result.duration,
                 "size_bytes": result.size_bytes,
                 "caption_style": preset.font,
+                "inserts": insert_records,
+                "insert_count": len(inserts),
                 "error": None,
             },
         },
@@ -395,6 +483,9 @@ def process_live_moment(
                 "platform": options.platform,
                 "variants": variants,
                 "forecast": forecast_data,
+                "meme_inserts": options.meme_inserts,
+                "meme_insert_seconds": options.meme_insert_seconds,
+                "meme_max_inserts": options.meme_max_inserts,
             },
         }
     )

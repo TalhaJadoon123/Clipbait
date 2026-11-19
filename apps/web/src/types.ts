@@ -70,6 +70,17 @@ export interface Clip {
     analysis?: string;
     region?: string;
     platform?: string;
+    insert_count?: number;
+    inserts?: Array<{
+      start: number;
+      end: number;
+      reason: string;
+      signals: string[];
+      source: string;
+      prompt: string;
+      path: string;
+      provider?: string;
+    }>;
   };
   created_at: string;
   updated_at: string;
@@ -103,6 +114,9 @@ export interface ProjectOptions {
   memes: boolean;
   variants: number;
   allow_medium_risk: boolean;
+  meme_inserts: boolean;
+  meme_insert_seconds?: number;
+  meme_max_inserts?: number;
 }
 
 export interface Project {

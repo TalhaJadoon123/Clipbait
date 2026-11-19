@@ -39,6 +39,7 @@ And one engineering constraint: **the zero-key path is a first-class product**. 
 | **Live chat spike detection → auto-clip** | ✅ | ❌ | paid tier |
 | **Region playbooks (26 markets)** | ✅ | ❌ | ❌ |
 | **Meme-format matching (26 formats)** | ✅ | ❌ | ❌ |
+| **Meme video b-roll inserts (gap/signal-triggered)** | ✅ | ❌ | ❌ |
 | **Explainable 0–100 forecast** | ✅ | ❌ | opaque score |
 | Runs fully offline | ✅ | ✅ | ❌ |
 | Zero API keys to render | ✅ | usually | ❌ |
@@ -257,6 +258,26 @@ Plus 26 evergreen meme **structures** (`POV`, `Nobody:`, `Expectation vs Reality
 
 Add your own market by appending a `RegionProfile` in `src/clipbait/virality/regions.py`; add a format by appending a `MemeFormat` in `virality/memes.py`. Everything is data — no model retraining, no prompt rewrite.
 
+### Meme video inserts
+
+Opt in per project (**Meme video inserts** in the UI, `meme_inserts` in the API,
+`CLIPBAIT_MEME_PROVIDER` for the machine default) and a clip can cut to a short
+generated b-roll video for a moment, then cut back. Two rules keep it from
+degrading the clip:
+
+- **Only if needed.** A cutaway is planned only where the transcript has a
+  dead-air **gap** or a **strong signal** (surprise, revelation, failure,
+  absurd, ...). A clip with neither gets no insert at all — the common case.
+- **Audio and captions never drift.** The insert replaces the **picture only**.
+  The original spoken audio keeps running underneath, and word-level captions
+  are burned on top of the insert from the same timings. Nothing is re-timed.
+
+Insert assets come from `CLIPBAIT_MEME_API_URL` (a hosted text-to-video API) when
+configured. With no key, Clipbait falls back to a locally ffmpeg-rendered
+placeholder card so the feature is testable offline — the same zero-key
+philosophy as the mock transcriber. A provider failure is a skipped insert, never
+a failed render. See [`docs/MEMES.md`](docs/MEMES.md).
+
 Details: [`docs/VIRALITY.md`](docs/VIRALITY.md).
 
 ---
@@ -282,6 +303,11 @@ Everything is environment-driven. Defaults are safe for a laptop.
 | `CLIPBAIT_TARGET_CLIP_SECONDS` | `55` | Default target length |
 | `CLIPBAIT_RENDER_CONCURRENCY` | `1` | Parallel render workers |
 | `CLIPBAIT_HW_ENCODER` | `auto` | `cpu`, `nvenc`, `qsv`, `vaapi`, `videotoolbox` |
+| `CLIPBAIT_MEME_PROVIDER` | `auto` | Meme video inserts: `auto`, `api`, `fixture`, `none` |
+| `CLIPBAIT_MEME_API_URL` | — | Hosted text-to-video endpoint for meme inserts |
+| `CLIPBAIT_MEME_API_KEY` | — | Bearer token for the meme API |
+| `CLIPBAIT_MEME_MODEL` | — | Optional model id sent to the meme API |
+| `CLIPBAIT_MEME_POLL_SECONDS` | `240` | Async generation poll budget |
 | `CLIPBAIT_LIVE_BUFFER_SECONDS` | `180` | Ring buffer depth |
 | `CLIPBAIT_LIVE_SEGMENT_SECONDS` | `4` | HLS segment size |
 | `CLIPBAIT_LIVE_CHAT_PROVIDER` | `auto` | `auto`, `youtube`, `twitch`, `demo` |
@@ -305,7 +331,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The suite covers the highest-risk pure logic: spike detection (including median/MAD and cooldown), segment selection, ASS generation for every preset, ranking/overlap suppression, region + meme packaging, forecast bounds, SSRF blocking, reframe geometry, transcription fallback and the HTTP contract (including SPA fallback).
+The suite covers the highest-risk pure logic: spike detection (including median/MAD and cooldown), segment selection, ASS generation for every preset, ranking/overlap suppression, region + meme packaging, meme-insert planning and render graph, forecast bounds, SSRF blocking, reframe geometry, transcription fallback and the HTTP contract (including SPA fallback).
 
 Frontend:
 

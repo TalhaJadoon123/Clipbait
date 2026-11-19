@@ -97,6 +97,11 @@ class ProjectOptions(BaseModel):
     memes: bool = True
     variants: int = Field(default=4, ge=1, le=8)
     allow_medium_risk: bool = False
+    # Meme *video* inserts (b-roll cutaways between spoken sentences). Off by
+    # default: it changes the footage, not just the copy.
+    meme_inserts: bool = False
+    meme_insert_seconds: float = Field(default=2.0, ge=0.8, le=5.0)
+    meme_max_inserts: int = Field(default=2, ge=1, le=6)
 
 
 class Project(BaseModel):

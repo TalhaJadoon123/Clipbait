@@ -1844,6 +1844,14 @@ input[type="range"]::-moz-range-thumb {
   gap: 5px;
 }
 
+.clip-inserts {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--lime, #d7ff3f);
+  opacity: 0.85;
+}
+
 .variants {
   border-top: 1px solid var(--line-soft);
   padding-top: 10px;

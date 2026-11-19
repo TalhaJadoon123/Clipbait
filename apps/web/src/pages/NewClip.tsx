@@ -27,6 +27,7 @@ export function NewClip() {
   const [reframe, setReframe] = useState("auto");
   const [memes, setMemes] = useState(true);
   const [mediumRisk, setMediumRisk] = useState(false);
+  const [memeInserts, setMemeInserts] = useState(false);
   const [llm, setLlm] = useState(true);
   const [variants, setVariants] = useState(4);
   const [busy, setBusy] = useState(false);
@@ -78,6 +79,7 @@ export function NewClip() {
       memes,
       variants,
       allow_medium_risk: mediumRisk,
+      meme_inserts: memeInserts,
       llm,
       captions: true,
       hook_titles: true,
@@ -301,6 +303,20 @@ export function NewClip() {
               <span>
                 <strong>Allow edgier memes</strong>
                 <small>Opt in to medium-risk formats per market.</small>
+              </span>
+            </label>
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={memeInserts}
+                onChange={(event) => setMemeInserts(event.target.checked)}
+              />
+              <span>
+                <strong>Meme video inserts</strong>
+                <small>
+                  Cut to generated b-roll only on a dead-air gap or a strong signal. The meme is muted,
+                  so audio and captions keep running underneath.
+                </small>
               </span>
             </label>
           </div>

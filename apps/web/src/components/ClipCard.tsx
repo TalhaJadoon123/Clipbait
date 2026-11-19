@@ -174,6 +174,15 @@ export function ClipCard({ clip, onChange }: Props) {
           ))}
         </div>
 
+        {clip.meta?.insert_count ? (
+          <p className="clip-inserts mono">
+            {clip.meta.insert_count} meme b-roll insert{clip.meta.insert_count === 1 ? "" : "s"}
+            {clip.meta.inserts?.length
+              ? ` · ${clip.meta.inserts.map((item) => formatTime(item.start)).join(", ")}`
+              : ""}
+          </p>
+        ) : null}
+
         {variants.length ? (
           <details className="variants" open={variants.length <= 4}>
             <summary>

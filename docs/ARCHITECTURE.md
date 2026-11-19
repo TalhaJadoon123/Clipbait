@@ -72,6 +72,7 @@ Choices and why:
 | `render/` | ffmpeg filter graph + progress parsing | `render_clip` |
 | `live/` | Chat sources, spike detector, recorder, runner | `start`, `stop`, `spike`, `recorder` |
 | `virality/` | Region profiles, meme formats, variants, forecast | `build_variants`, `forecast` |
+| `memes/` | Meme **video** inserts: planner, providers, asset prep | `plan_inserts`, `prepare_insert` |
 | `api/app.py` | HTTP surface, SSE, SPA mount | `app`, `create_app` |
 | `cli.py` | `serve` / `process` / `live` / `doctor` | `main` |
 

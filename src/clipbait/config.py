@@ -63,6 +63,13 @@ class Settings:
     anthropic_model: str = "claude-sonnet-4-2"
     gemini_model: str = "gemini-2.5-flash"
     ollama_model: str = "qwen2.5:14b"
+    # Meme video inserts. ``auto`` uses the hosted API when one is configured and
+    # falls back to a locally rendered placeholder otherwise.
+    meme_provider: str = "auto"
+    meme_api_url: str | None = None
+    meme_api_key: str | None = None
+    meme_model: str = ""
+    meme_poll_seconds: int = 240
     max_clips: int = 8
     target_clip_seconds: int = 55
     render_concurrency: int = 1
@@ -130,6 +137,11 @@ def get_settings() -> Settings:
         anthropic_model=_env("CLIPBAIT_ANTHROPIC_MODEL", "claude-sonnet-4-2") or "claude-sonnet-4-2",
         gemini_model=_env("CLIPBAIT_GEMINI_MODEL", "gemini-2.5-flash") or "gemini-2.5-flash",
         ollama_model=_env("CLIPBAIT_OLLAMA_MODEL", "qwen2.5:14b") or "qwen2.5:14b",
+        meme_provider=_env("CLIPBAIT_MEME_PROVIDER", "auto") or "auto",
+        meme_api_url=_env("CLIPBAIT_MEME_API_URL"),
+        meme_api_key=_env("CLIPBAIT_MEME_API_KEY"),
+        meme_model=_env("CLIPBAIT_MEME_MODEL", "") or "",
+        meme_poll_seconds=max(10, _env_int("CLIPBAIT_MEME_POLL_SECONDS", 240)),
         max_clips=_env_int("CLIPBAIT_MAX_CLIPS", 8),
         target_clip_seconds=_env_int("CLIPBAIT_TARGET_CLIP_SECONDS", 55),
         render_concurrency=max(1, _env_int("CLIPBAIT_RENDER_CONCURRENCY", 1)),
@@ -153,6 +165,7 @@ class Capabilities:
     pytchat: bool
     llm_provider: str | None
     transcriber: str
+    meme_provider: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -164,6 +177,7 @@ class Capabilities:
             "pytchat": self.pytchat,
             "llm_provider": self.llm_provider,
             "transcriber": self.transcriber,
+            "meme_provider": self.meme_provider,
         }
 
 
@@ -208,4 +222,12 @@ def detect_capabilities(settings: Settings | None = None) -> Capabilities:
         pytchat=_has_module("pytchat"),
         llm_provider=provider,
         transcriber=console,
+        meme_provider=_meme_provider_name(settings),
     )
+
+
+def _meme_provider_name(settings: Settings) -> str | None:
+    # Imported lazily: the memes package imports this module.
+    from .memes.providers import get_meme_provider, provider_name
+
+    return provider_name(get_meme_provider(settings))

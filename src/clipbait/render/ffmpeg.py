@@ -32,6 +32,7 @@ class RenderResult:
     size_bytes: int
     command: list[str]
     layout: str
+    inserts: int = 0
 
 
 def _even(value: int) -> int:
@@ -48,6 +49,7 @@ def _graph(
     *,
     fps: float,
     has_audio: bool,
+    inserts: list[tuple[float, float]] | None = None,
 ) -> tuple[str, bool]:
     out_w, out_h = plan.out_w, plan.out_h
     scaled_w = _even(round(plan.source_w * out_h / plan.source_h)) if plan.source_h else out_w
@@ -92,10 +94,29 @@ def _graph(
     else:
         chain = f"{base},crop={out_w}:{out_h}:x=(iw-{out_w})/2:y=0[layout]"
 
+    # Meme inserts cover the picture for their window, then hand back. They are
+    # composited onto the reframed video and *before* the caption pass, so the
+    # spoken audio and its word-level captions run continuously underneath and
+    # can never drift. Input index i is the i-th extra -i (0 is the source).
+    final = "layout"
+    for index, (start, end) in enumerate(inserts or [], start=1):
+        # Shift the insert onto the clip timeline: its own PTS start at 0, but
+        # the overlay window opens at ``start`` seconds.
+        chain += (
+            f";[{index}:v]setpts=PTS-STARTPTS+{start:.3f}/TB,"
+            f"scale={out_w}:{out_h}:force_original_aspect_ratio=increase,"
+            f"crop={out_w}:{out_h},fps={fps},setsar=1[m{index}]"
+        )
+        chain += (
+            f";[{final}][m{index}]overlay=(W-w)/2:(H-h)/2:"
+            f"enable='between(t,{start:.3f},{end:.3f})'[o{index}]"
+        )
+        final = f"o{index}"
+
     if ass_path:
-        chain += f";[layout]ass=f={_esc(ass_path)},setsar=1[v]"
+        chain += f";[{final}]ass=f={_esc(ass_path)},setsar=1[v]"
     else:
-        chain += ";[layout]null[v]"
+        chain += f";[{final}]null[v]"
 
     if has_audio:
         chain += ";[0:a]asetpts=PTS-STARTPTS,aresample=48000[a]"
@@ -115,11 +136,27 @@ def render_clip(
     hook: str | None = None,
     chat: list[ChatMessage] | None = None,
     encoder: str | None = None,
+    inserts: list[tuple[Path, float, float]] | None = None,
     on_progress: ProgressFn | None = None,
 ) -> RenderResult:
     settings = get_settings()
     duration = max(0.2, end - start)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Drop any insert whose file vanished, so a bad asset degrades to "no meme"
+    # instead of a failed render. Times are clip-local and clipped to the clip.
+    windows: list[tuple[float, float]] = []
+    insert_paths: list[Path] = []
+    for path, ins_start, ins_end in inserts or []:
+        if not path.exists():
+            log.warning("insert asset missing, skipping: %s", path)
+            continue
+        local_start = max(0.0, min(duration, ins_start))
+        local_end = max(local_start, min(duration, ins_end))
+        if local_end - local_start < 0.2:
+            continue
+        insert_paths.append(path)
+        windows.append((local_start, local_end))
 
     ass_path: Path | None = None
     if captions and words:
@@ -129,7 +166,9 @@ def render_clip(
     info = media.probe(source)
     if plan.mode == "track":
         plan = plan.with_sendcmd(out_path.parent / "crop.cmd")
-    graph, has_audio = _graph(plan, ass_path, fps=plan.fps, has_audio=info.has_audio)
+    graph, has_audio = _graph(
+        plan, ass_path, fps=plan.fps, has_audio=info.has_audio, inserts=windows
+    )
 
     encoder_args = media.hw_encoder(encoder or settings.hw_encoder)
     cmd = [
@@ -142,6 +181,10 @@ def render_clip(
         f"{duration:.3f}",
         "-i",
         str(source),
+    ]
+    for path in insert_paths:
+        cmd += ["-i", str(path)]
+    cmd += [
         "-filter_complex",
         graph,
         "-map",
@@ -202,4 +245,5 @@ def render_clip(
         size_bytes=out_path.stat().st_size,
         command=cmd,
         layout=plan.mode,
+        inserts=len(insert_paths),
     )
