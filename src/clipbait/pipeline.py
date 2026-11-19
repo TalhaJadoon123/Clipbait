@@ -21,7 +21,7 @@ from .memes import (
     plan_inserts,
     prepare_insert,
 )
-from .reframe import plan_reframe
+from .reframe import ReframePlan, plan_reframe
 from .render import render_clip
 from .schema import ChatMessage, Highlight, ProjectOptions, Transcript
 from .virality import build_variants, forecast, get_region
@@ -257,7 +257,7 @@ def _create_clip(
 def _clip_inserts(
     clip: dict,
     transcript: Transcript,
-    plan,
+    plan: ReframePlan,
     *,
     on_progress=None,
 ) -> tuple[list[tuple[Path, float, float]], list[dict]]:

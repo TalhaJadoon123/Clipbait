@@ -67,3 +67,40 @@ def test_auto_uses_a_cloud_key_before_mock() -> None:
 def test_unknown_preference_falls_back_to_mock() -> None:
     settings = replace(get_settings(), transcriber="something-else")
     assert AutoTranscriber(settings).resolve().name == "mock"
+
+
+def _write_wav(path: Path, rate: int, channels: int, seconds: float) -> None:
+    import struct
+    import wave
+
+    frames = int(rate * seconds)
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(channels)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(b"".join(struct.pack("<h", 1000) for _ in range(frames * channels)))
+
+
+def test_decode_audio_array_reads_mono_16k(tmp_path: Path) -> None:
+    from clipbait.transcribe import _decode_audio_array
+
+    path = tmp_path / "mono16k.wav"
+    _write_wav(path, 16000, 1, 0.25)
+    samples = _decode_audio_array(path)
+    assert samples is not None
+    assert len(samples) == 4000
+    assert abs(float(samples[0]) - 1000 / 32768) < 1e-6
+
+
+def test_decode_audio_array_skips_other_shapes(tmp_path: Path) -> None:
+    from clipbait.transcribe import _decode_audio_array
+
+    stereo = tmp_path / "stereo.wav"
+    _write_wav(stereo, 16000, 2, 0.1)
+    assert _decode_audio_array(stereo) is None
+
+    wrong_rate = tmp_path / "44k.wav"
+    _write_wav(wrong_rate, 44100, 1, 0.1)
+    assert _decode_audio_array(wrong_rate) is None
+
+    assert _decode_audio_array(tmp_path / "missing.wav") is None

@@ -16,6 +16,7 @@ import json
 import math
 import random
 import re
+import wave
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -145,8 +146,13 @@ class WhisperTranscriber(Transcriber):
 
     def transcribe(self, audio: Path, language: str = "auto") -> Transcript:
         model = self._load()
+        # Decode the pipeline's 16 kHz mono PCM WAV ourselves and hand Whisper
+        # a float32 array. That keeps us off PyAV's container API, whose
+        # ``av.open`` keyword set drifts between releases; a non-WAV file falls
+        # back to letting faster-whisper decode it.
+        samples = _decode_audio_array(audio)
         segments_iter, info = model.transcribe(
-            str(audio),
+            samples if samples is not None else str(audio),
             language=None if language in {"auto", ""} else language,
             word_timestamps=True,
             vad_filter=True,
@@ -173,9 +179,12 @@ class WhisperTranscriber(Transcriber):
                 )
         if not words:
             raise TranscriptionError("Whisper returned no words; the audio may be silent")
+        duration = float(getattr(info, "duration", 0.0) or 0.0)
+        if not duration and samples is not None:
+            duration = len(samples) / 16000.0
         return Transcript(
             language=getattr(info, "language", None) or "en",
-            duration=float(getattr(info, "duration", 0.0) or 0.0),
+            duration=duration,
             words=words,
             segments=segments,
             provider="whisper",
@@ -347,6 +356,25 @@ def _cuda_available() -> bool:
         return bool(torch.cuda.is_available())
     except Exception:  # noqa: BLE001
         return False
+
+
+def _decode_audio_array(path: Path):
+    """Return a mono 16 kHz float32 numpy array, or ``None`` to let the
+    transcriber decode the file itself (non-WAV, other sample rates)."""
+    try:
+        with wave.open(str(path), "rb") as handle:
+            if handle.getsampwidth() != 2 or handle.getnchannels() != 1:
+                return None
+            if handle.getframerate() != 16000:
+                return None
+            frames = handle.readframes(handle.getnframes())
+    except (wave.Error, OSError, EOFError):
+        return None
+    try:
+        import numpy as np  # type: ignore[import-not-found]
+    except ImportError:  # pragma: no cover - numpy ships with ctranslate2
+        return None
+    return np.frombuffer(frames, dtype="<i2").astype("float32") / 32768.0
 
 
 def _parse_json(text: str) -> dict:
