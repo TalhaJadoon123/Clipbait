@@ -266,3 +266,25 @@ def test_export_bundle_reads_the_rate_from_the_campaign_file(tmp_path) -> None:
         metadata["expected_views"] / 1000.0 * 2.0, abs=0.02
     )
     assert metadata["rpm"] == pytest.approx(2.0)
+
+
+def test_a_rejected_clip_leaves_the_queue_but_keeps_its_file() -> None:
+    from clipbait.money import mark_rejected
+
+    clip = make_ready(title="A reaction with nothing in it", start=3_000.0, end=3_045.0)
+    assert any(item.clip_id == clip["id"] for item in build_queue(min_score=0.0).items)
+
+    updated = mark_rejected(clip["id"], reason="chat reflex, no on-stream signal")
+    assert updated["meta"]["rejected"]["reason"] == "chat reflex, no on-stream signal"
+    assert not any(item.clip_id == clip["id"] for item in build_queue(min_score=0.0).items)
+    assert storage.resolve(clip["render_path"]).exists(), "rejection must not delete the render"
+
+
+def test_project_match_keeps_one_campaign_out_of_the_other() -> None:
+    kai = make_ready(title="Kai clip", start=4_000.0, end=4_030.0)
+    other = db.get_project(kai["project_id"])
+    db.update("projects", other["id"], {"title": "Kai Cenat GTA 6"})
+
+    matched = build_queue(min_score=0.0, project_match="kai cenat")
+    assert matched.items and all("kai cenat" in item.project_title.lower() for item in matched.items)
+    assert not build_queue(min_score=0.0, project_match="nothing-like-this").items

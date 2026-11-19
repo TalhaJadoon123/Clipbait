@@ -177,6 +177,10 @@ def _uploaded(clip: dict) -> dict:
     return dict((clip.get("meta") or {}).get("uploaded") or {})
 
 
+def _rejected(clip: dict) -> dict:
+    return dict((clip.get("meta") or {}).get("rejected") or {})
+
+
 def _render_ok(clip: dict) -> bool:
     stored = clip.get("render_path")
     if not stored:
@@ -243,6 +247,7 @@ def build_queue(
     min_score: float = DEFAULT_MIN_SCORE,
     include_posted: bool = False,
     rate_per_1k: float | None = None,
+    project_match: str | None = None,
 ) -> Queue:
     """Rank every ready clip by expected revenue.
 
@@ -251,8 +256,23 @@ def build_queue(
     """
     clips = db.list_rows("clips", where="status = ?", params=("ready",), limit=1000)
     projects: dict[str, dict] = {}
+    monitors: dict[str, dict] = {}
     items: list[QueueItem] = []
     seen: set[tuple[str, int, int]] = set()
+    needle = (project_match or "").strip().lower()
+
+    def belongs_to_campaign(clip: dict, project: dict) -> bool:
+        """Live projects are titled by the moment, so the monitor is the source."""
+        if not needle:
+            return True
+        parts = [str(project.get("title") or ""), str(project.get("source_url") or "")]
+        monitor_id = str((clip.get("meta") or {}).get("monitor_id") or "")
+        if monitor_id:
+            if monitor_id not in monitors:
+                monitors[monitor_id] = db.get_monitor(monitor_id) or {}
+            monitor = monitors[monitor_id]
+            parts += [str(monitor.get("title") or ""), str(monitor.get("url") or "")]
+        return needle in " ".join(parts).lower()
 
     for clip in clips:
         project_id = clip.get("project_id", "")
@@ -263,6 +283,12 @@ def build_queue(
 
         item = _to_item(clip, project, rate_per_1k=rate_per_1k)
         if item is None:
+            continue
+        if _rejected(clip):
+            # Curated out by the operator: a reaction with nothing in it, a
+            # duplicate, footage the campaign does not accept.
+            continue
+        if not belongs_to_campaign(clip, project):
             continue
         if item.score < min_score:
             continue
@@ -297,6 +323,16 @@ def queue_item(
     if _uploaded(clip) and not include_posted:
         return None
     return _to_item(clip, project, rate_per_1k=rate_per_1k)
+
+
+def mark_rejected(clip_id: str, *, reason: str = "") -> dict | None:
+    """Take a clip out of the queue without deleting it. Idempotent."""
+    clip = db.get_clip(clip_id)
+    if not clip:
+        return None
+    meta = dict(clip.get("meta") or {})
+    meta["rejected"] = {"at": datetime.now(UTC).isoformat(), "reason": reason.strip()}
+    return db.update("clips", clip_id, {"meta": meta})
 
 
 def mark_uploaded(clip_id: str, *, url: str | None = None, platform: str | None = None) -> dict | None:

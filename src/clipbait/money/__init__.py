@@ -16,6 +16,7 @@ from .queue import (
     QueueItem,
     build_queue,
     export_bundle,
+    mark_rejected,
     mark_uploaded,
     queue_item,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "default_campaign",
     "export_bundle",
     "load_campaign",
+    "mark_rejected",
     "mark_uploaded",
     "parse_campaign",
     "queue_item",

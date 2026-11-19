@@ -409,3 +409,42 @@ def test_analysis_uses_the_cheap_slice_when_the_recorder_has_one(tmp_path: Path)
     )
     assert watcher.step(now=60.0) is not None
     assert calls == ["analysis"]
+
+
+def test_action_is_measured_against_the_streams_own_pace() -> None:
+    """A stream that always cuts is not 'action' every single minute."""
+    from clipbait.live.content import relative_action
+
+    busy = ActionStats(cuts=40, per_second=1.2, burst=1.4, score=2.8, reasons=("14 cuts in 4s",))
+    assert relative_action(busy, baseline_burst=1.35).score == 0.0
+    assert relative_action(busy, baseline_burst=1.35).reasons == ()
+
+    sudden = ActionStats(cuts=60, per_second=1.9, burst=3.0, score=2.8, reasons=("12 cuts in 4s",))
+    assert relative_action(sudden, baseline_burst=1.2).score > 1.0
+    assert relative_action(sudden, baseline_burst=1.2).reasons
+
+    first = relative_action(busy, baseline_burst=0.0)  # no history yet: unchanged
+    assert first.score == 2.8
+
+
+def test_words_with_no_mic_energy_score_weaker() -> None:
+    """Radio lyrics and NPC dialogue are not the streamer shouting."""
+    quiet = fuse_window(
+        start=0.0,
+        end=32.0,
+        speech=score_speech("and who's gonna stop us nobody but the cocks come on", 8.0),
+        audio=AudioStats(),
+        action=ActionStats(),
+    )
+    loud = fuse_window(
+        start=0.0,
+        end=32.0,
+        speech=score_speech("and who's gonna stop us nobody but the cocks come on", 8.0),
+        audio=AudioStats(score=1.0, jump_db=9.0),
+        action=ActionStats(),
+    )
+    assert quiet.speech.score == loud.speech.score
+    assert quiet.score < loud.score
+    assert quiet.score == pytest.approx(
+        round(0.62 * quiet.speech.score * 0.7, 3), abs=0.005
+    )

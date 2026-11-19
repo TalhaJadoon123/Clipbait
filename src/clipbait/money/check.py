@@ -114,9 +114,9 @@ def parse_campaign(text: str, *, source: str = "inline") -> CampaignRules:
     if match:
         banned = tuple(part.strip().lower() for part in match.group(1).split(",") if part.strip())
         explicit = True
+    # The rate prices the clip; it is not a compliance rule, so a file that
+    # only sets a rate must not claim it verified the brief.
     rate = _number(text, r"rate_per_1k:\s*\$?(\d+(?:\.\d+)?)")
-    if rate is not None:
-        explicit = True
     return replace(
         rules,
         required_hashtags=tags,
@@ -312,9 +312,14 @@ def check_clip(
     if copy and "#" not in copy:
         warnings.append("caption has no hashtags; discovery will be weaker")
     if not active.from_file:
+        where = (
+            f"{active.source} sets no rules"
+            if active.source != "defaults"
+            else "no campaign file"
+        )
         warnings.append(
-            "no campaign file: defaults used, this is not a rules check. "
-            "Paste the real brief into data/campaigns/ or pass --campaign."
+            f"{where}: defaults used, this is not a rules check. "
+            "Paste the brief's duration/tags/mention/terms into data/campaigns/ or pass --campaign."
         )
 
     return CheckReport(

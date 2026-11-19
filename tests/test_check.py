@@ -113,3 +113,15 @@ def test_caption_length_rule_reads_the_copy(tmp_path, bad: str) -> None:
     report = check_clip(tmp_path / "missing.mp4", caption=bad)
     row = next(row for row in report.rows if row.name.startswith("caption fits"))
     assert row.ok
+
+def test_a_rate_only_file_prices_but_does_not_claim_a_rules_check(tmp_path) -> None:
+    """The rate is money, not compliance: a rate-only brief is honest about it."""
+    path = tmp_path / "rate.md"
+    path.write_text("rate_per_1k: 2.00\n# min_seconds: 15\n", encoding="utf-8")
+
+    rules = parse_campaign(path.read_text(), source=str(path))
+
+    assert rules.rate_per_1k == 2.00
+    assert not rules.from_file
+    report = check_clip(tmp_path / "missing.mp4", rules=rules)
+    assert any("sets no rules" in warning for warning in report.warnings)

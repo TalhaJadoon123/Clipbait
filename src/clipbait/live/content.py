@@ -27,6 +27,7 @@ import math
 import re
 import subprocess
 import tempfile
+from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -311,6 +312,27 @@ def score_action(times: list[float], duration: float) -> ActionStats:
     )
 
 
+def relative_action(action: ActionStats, baseline_burst: float) -> ActionStats:
+    """Score an action burst against the stream's own recent pace.
+
+    Gameplay cuts constantly: a GTA drive can hit five scene changes in four
+    seconds all night, which saturates the absolute score and makes every window
+    look busy (0.45 x 2.8 = 1.26 of free score, enough to trigger on nothing).
+    Two times the usual pace is action; the usual pace is not.
+    """
+    if action.burst <= 0 or baseline_burst <= 0.01:
+        return action
+    ratio = action.burst / baseline_burst
+    if ratio <= 1.15:
+        return replace(action, score=0.0, reasons=())
+    scaled = min(2.8, action.score * min(1.6, (ratio - 1.0) * 1.5))
+    return replace(
+        action,
+        score=round(scaled, 3),
+        reasons=action.reasons if scaled >= 0.8 else (),
+    )
+
+
 def analyze_scene(path: Path, duration: float) -> ActionStats:
     """Count hard scene changes with ffmpeg. Never raises."""
     settings = get_settings()
@@ -364,6 +386,11 @@ def fuse_window(
     is not required - it only raises the score.
     """
     score = 0.62 * speech.score + 0.55 * audio.score + 0.45 * action.score
+    if speech.score and not audio.score and not action.score:
+        # Words with no mic energy and no movement are usually the game: radio
+        # lyrics, NPC dialogue, a cutscene. Demand a much louder spoken signal
+        # before a transcript alone can start a clip.
+        score *= 0.7
     score = round(min(9.9, score), 3)
 
     reasons = [*speech.reasons, *audio.reasons, *action.reasons]
@@ -439,6 +466,7 @@ class ContentWatcher:
         self._last_analyzed_end = 0.0
         self._last_trigger = -1e9
         self._speech_ready: bool | None = None
+        self._action_bursts: deque[float] = deque(maxlen=60)
         self.windows = 0
         self.triggers = 0
 
@@ -553,7 +581,7 @@ class ContentWatcher:
                 except media.MediaError:
                     audio = None
 
-                action = analyze_scene(video, duration)
+                action = self._relative_action(analyze_scene(video, duration))
                 audio_stats = AudioStats()
                 samples: list[tuple[float, float]] = []
                 if audio is not None:
@@ -586,6 +614,13 @@ class ContentWatcher:
             for path in (video, audio):
                 if path is not None:
                     path.unlink(missing_ok=True)
+
+    def _relative_action(self, action: ActionStats) -> ActionStats:
+        history = sorted(self._action_bursts)
+        baseline = history[len(history) // 2] if len(history) >= 3 else 0.0
+        if action.burst > 0:
+            self._action_bursts.append(action.burst)
+        return relative_action(action, baseline)
 
     def _transcribe(self, audio: Path, start: float, duration: float):
         try:

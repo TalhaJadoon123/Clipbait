@@ -351,11 +351,19 @@ def cmd_streams(args: argparse.Namespace) -> int:
 
 
 def cmd_queue(args: argparse.Namespace) -> int:
-    from .money import build_queue, export_bundle, mark_uploaded
+    from .money import build_queue, export_bundle, mark_rejected, mark_uploaded
 
     settings = get_settings()
     settings.ensure_dirs()
     db.init_db()
+
+    if args.reject:
+        updated = mark_rejected(args.reject, reason=args.reason or "")
+        if not updated:
+            print(f"clip not found: {args.reject}")
+            return 1
+        print(f"rejected {args.reject}" + (f": {args.reason}" if args.reason else ""))
+        return 0
 
     if args.mark:
         updated = mark_uploaded(args.mark, url=args.url, platform=args.platform)
@@ -378,6 +386,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
         min_score=args.min_score,
         include_posted=args.include_posted,
         rate_per_1k=rate,
+        project_match=args.project_match,
     )
     if args.json:
         print(json.dumps(queue.as_dict(), indent=2))
@@ -494,6 +503,11 @@ def build_parser() -> argparse.ArgumentParser:
     queue_cmd.add_argument(
         "--rate", type=float, help="campaign payout per 1000 views, e.g. 2.0"
     )
+    queue_cmd.add_argument(
+        "--project-match", help="only clips whose project title contains this text"
+    )
+    queue_cmd.add_argument("--reject", help="hide a clip from the queue (keeps the file)")
+    queue_cmd.add_argument("--reason", help="why it was rejected, stored with the clip")
     queue_cmd.add_argument("--mark", metavar="CLIP_ID", help="mark one clip uploaded")
     queue_cmd.add_argument("--url", help="posted URL for --mark")
     queue_cmd.add_argument("--platform", help="platform for --mark")
