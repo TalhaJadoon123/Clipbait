@@ -491,8 +491,13 @@ class ContentWatcher:
         self._last_trigger = trigger
         self.triggers += 1
 
+        # Everything the scorer heard must be inside the cut. The analysis
+        # window can be longer than the pre-roll (32s vs 25s), so anchoring only
+        # on the trigger drops the opening seconds — exactly where the scored
+        # line often starts.
+        clip_start = min(trigger - self.pre_roll, start)
         return MomentCandidate(
-            start=round(max(0.0, trigger - self.pre_roll), 2),
+            start=round(max(0.0, clip_start), 2),
             end=round(trigger + self.post_roll, 2),
             trigger_at=round(trigger, 2),
             score=window.score,

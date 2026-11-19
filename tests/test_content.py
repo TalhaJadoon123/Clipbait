@@ -291,3 +291,45 @@ def test_watcher_survives_a_broken_slice(tmp_path: Path) -> None:
         threshold=0.1,
     )
     assert watcher.step(now=60.0) is None
+
+def test_trigger_clip_covers_the_whole_scored_window(tmp_path: Path) -> None:
+    """The scored line must be inside the cut, even when it starts the window.
+
+    A whole-window speech score anchors on the end of the 32s window, which is
+    later than ``trigger - pre_roll`` (25s). Anchoring only on that dropped the
+    opening seconds of the very audio the detector had just scored.
+    """
+    class WholeWindowTranscriber:
+        name = "fixture"
+
+        def transcribe(self, audio: Path, language: str = "auto") -> Transcript:
+            words = " ".join(["insane"] * 64)
+            return Transcript(
+                provider="fixture",
+                language="en",
+                duration=32.0,
+                segments=[TranscriptSegment(start=0.0, end=32.0, text=words)],
+                words=[],
+            )
+
+    source = make_video(tmp_path / "stream.mp4", seconds=6)
+    watcher = ContentWatcher(
+        StubRecorder(source),
+        directory=tmp_path / "live",
+        window_seconds=32,
+        interval_seconds=8,
+        threshold=0.1,
+        pre_roll=25,
+        post_roll=20,
+        transcriber=WholeWindowTranscriber(),
+        allow_mock_speech=True,
+    )
+
+    candidate = watcher.step(now=60.0)
+
+    assert candidate is not None
+    # Whole-window speech anchors the trigger at the end of the window.
+    assert candidate.trigger_at == pytest.approx(58.0)
+    window_start = 60.0 - 2.0 - 32.0
+    assert candidate.start == pytest.approx(window_start)
+    assert candidate.end == pytest.approx(78.0)
