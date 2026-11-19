@@ -187,6 +187,29 @@ ingest ──▶ transcribe ──▶ analyze ──▶ ranking ──▶ refram
 
 Then **packaging** runs per clip: `virality/regions.py` + `virality/memes.py` + `virality/packaging.py` produce ranked variants and a forecast. Rendering is one ffmpeg process per clip; progress is parsed from `-progress pipe:1`. Hardware encoders are *test-encoded* before use, because "listed by ffmpeg" is not the same as "the GPU is reachable".
 
+### Real captions
+
+Captions are not a guess: they are transcribed from the clip's own audio with
+word-level timestamps, and each word becomes one ASS `Dialogue` event at the
+moment it is spoken. Cuts, inserts and reframing never re-time them, so the
+caption text always matches what is heard.
+
+The real path is local **faster-whisper**, which needs no key:
+
+```bash
+pip install -e ".[whisper]"
+clipbait doctor                 # should say whisper: yes
+CLIPBAIT_WHISPER_MODEL=small clipbait serve
+```
+
+`CLIPBAIT_WHISPER_MODEL` trades accuracy for speed: `tiny` is fine for a quick
+demo (a 2-minute clip transcribes in well under a minute on CPU), `small` is the
+better default, and `base`/`medium` sit between them. The model is downloaded
+once into `<data>/models`. Without faster-whisper, Clipbait falls back to a
+deterministic **mock** transcript so rendering still works — but that text is
+synthetic, and both the API (`meta.transcriber`) and the UI say so explicitly.
+Cloud transcription (OpenAI/Gemini) is used when its key is present.
+
 ### Project layout
 
 ```
