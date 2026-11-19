@@ -40,9 +40,14 @@ def ensure_source(project: dict, job_id: str | None, progress_base: float = 0.0)
     if not project.get("source_url"):
         raise media.MediaError("project has no source URL or file")
 
-    jobs.progress(job_id, progress_base + 0.04, "downloading", "Fetching source video")
+    jobs.progress(job_id, progress_base + 0.02, "downloading", "Fetching source video")
     _set_status(project_id, "downloading")
-    result = ingest_source(project, job_id)
+
+    def on_download(fraction: float, message: str) -> None:
+        # Live download feedback: the ingest step owns 2% -> 9% of the run.
+        jobs.progress(job_id, progress_base + 0.02 + 0.07 * fraction, "downloading", message)
+
+    result = ingest_source(project, job_id, on_progress=on_download)
     updated = db.update(
         "projects",
         project_id,
@@ -57,7 +62,7 @@ def ensure_source(project: dict, job_id: str | None, progress_base: float = 0.0)
     return updated or project
 
 
-def ingest_source(project: dict, job_id: str | None = None):
+def ingest_source(project: dict, job_id: str | None = None, on_progress=None):
     from .ingest import fetch_remote, ingest_local
 
     project_id = project["id"]
@@ -66,7 +71,7 @@ def ingest_source(project: dict, job_id: str | None = None):
     url = project.get("source_url")
     if not url:
         raise ValueError("missing source")
-    return fetch_remote(url, project_id)
+    return fetch_remote(url, project_id, on_progress=on_progress)
 
 
 def _load_transcript(project_id: str) -> Transcript | None:
