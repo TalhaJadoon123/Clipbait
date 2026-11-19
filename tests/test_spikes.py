@@ -111,3 +111,13 @@ def test_timeline_reflects_buckets() -> None:
     assert len(timeline) >= 10
     assert all({"t", "count", "authors", "rate"} <= set(point) for point in timeline)
     assert detector.current_rate() > 0
+
+def test_react_flood_does_not_make_a_clip() -> None:
+    """W/ww/emoji walls are audience reflexes, not moments worth cutting."""
+    detector = SpikeDetector(SpikeConfig(threshold=2.0, cooldown_seconds=45))
+    next_t = calm(detector, buckets=10)
+    results = [
+        detector.add(chat(next_t + index * 0.1, text=text, author=f"u{index}"))
+        for index, text in enumerate(["W", "ww", "W", "ww", "W", "ww"] * 2)
+    ]
+    assert [c for c in results if c is not None] == []

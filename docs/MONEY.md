@@ -89,10 +89,82 @@ is idempotent.
 clip.mp4          the vertical render, upload as-is
 caption.txt       hook + description + hashtags, ready to paste
 metadata.json     machine-readable copy, platform, estimate, posted state
-README.md         what to post, where, and the expected range
+check.json        pre-post check: pass/fail per campaign rule
+README.md         what to post, where, the expected range, and the check
 ```
 
 No absolute paths are returned: `dir` is relative to the data directory.
+
+---
+
+## Before you post: the check
+
+A render that looks right can still be rejected by the campaign: 25 fps, no
+audio track, 12 seconds instead of 15, a banned word in the hook, a missing
+hashtag. `money/check.py` catches that before the upload.
+
+```bash
+clipbait campaign                      # write data/campaigns/campaign.md
+clipbait check clip_abc123             # uses the clip's own caption
+clipbait check ./clip.mp4 --campaign data/campaigns/clipmoney.md \
+  --caption "hook
+
+#gta6 #clipmoney"
+```
+
+Rules file (only uncommented lines count):
+
+```
+min_seconds: 15
+max_seconds: 60
+required_hashtags: #gta6 #clipmoney
+required_mention: @clipmoney
+banned_terms: spoiler, early build
+```
+
+Always checked, no config: file exists, probes as video, 1080x1920, ~30 fps,
+audio track present, duration within the rules, no piracy/mod-menu wording,
+required hashtags and mention present, caption under 2200 characters.
+
+```
+PASS  file exists
+PASS  resolution 1080x1920  [1080x1920]
+PASS  fps about 30  [30.00]
+PASS  has audio
+PASS  duration 15-60s  [38.0s]
+PASS  no banned terms in caption/hook
+PASS  required hashtags  [#gta6 #clipmoney]
+RESULT: PASS
+```
+
+Exit code is `1` on any FAIL, so a cron job or CI step can gate the upload. If
+no rules file is found the report says so instead of pretending it verified a
+campaign: defaults are a sanity check, not a compliance check.
+
+---
+
+## Finding a live room
+
+The best moment in a 40-viewer stream earns nothing. `clipbait streams` searches
+YouTube's own live filter and ranks by the concurrent viewer count YouTube
+returns, so the room you enter already has distribution:
+
+```bash
+clipbait streams --query "gta 6" --limit 15
+clipbait streams --query "gta 6" --json > rooms.json
+clipbait streams --query "gta 6" --out rooms.md
+clipbait streams --query "gta 6" --watch    # monitor the biggest room now
+```
+
+```
+   1. 139,774 viewers  IShowSpeed   PLAYING GTA 6 RIGHT NOW ...  https://youtube.com/watch?v=...
+   2.  83,575 viewers  TheBurntPeanut  LIVE | GTA 6 | DAY 2 ...  https://youtube.com/watch?v=...
+   3.  54,936 viewers  Kai Cenat Live  PLAYING GTA 6 ...         https://youtube.com/watch?v=...
+```
+
+Numbers are what the platform reported at run time; nothing is extrapolated.
+Search results are only candidates - the flat result omits `is_live` and viewer
+counts - so each one is resolved against its watch page before ranking.
 
 ---
 
@@ -111,6 +183,14 @@ clipbait queue --export
 # Record what you posted (hides it from the default queue)
 clipbait queue --mark clip_abc123 --url "https://tiktok.com/@me/video/1" \
   --platform tiktok
+
+# Find the biggest live room, then watch it
+clipbait streams --query "gta 6" --limit 15
+clipbait streams --query "gta 6" --watch
+
+# Gate the upload on the campaign's actual rules
+clipbait campaign
+clipbait check clip_abc123 --campaign data/campaigns/clipmoney.md
 ```
 
 Output is one line per clip:

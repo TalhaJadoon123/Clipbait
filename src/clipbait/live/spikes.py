@@ -35,6 +35,22 @@ NEGATIVE = {"hate", "worst", "trash", "boring", "cringe", "no", "bad", "💀", "
 URL_RE = re.compile(r"https?://|www\.")
 
 
+def _meaningful(texts: list[str]) -> bool:
+    """True when at least one message says something a human typed on purpose.
+
+    ``W`` / ``ww`` / emoji-only floods are the most common chat spike on a big
+    stream and the least useful clip trigger: nothing happens, the audience just
+    reacted. Requiring a few real characters removes those without needing a
+    language model.
+    """
+    for text in texts[:3]:
+        stripped = (text or "").strip()
+        letters = re.sub(r"[^A-Za-z]", "", stripped).lower()
+        if len(stripped) >= 6 and len(set(letters)) >= 3:
+            return True
+    return False
+
+
 @dataclass(frozen=True)
 class SpikeConfig:
     bucket_seconds: float = 4.0
@@ -210,6 +226,10 @@ class SpikeDetector:
     def _maybe_trigger(self, now: float, bucket: Bucket) -> MomentCandidate | None:
         signal = self.signal_for(bucket)
         if signal.score < self.config.threshold:
+            return None
+        if not _meaningful(signal.top_messages):
+            # A wall of "W", "ww" or a single emoji is an audience reflex, not a
+            # moment. Cutting it produces a clip with nothing in it.
             return None
         self._last_trigger = now
         start = max(0.0, now - self.config.pre_roll)

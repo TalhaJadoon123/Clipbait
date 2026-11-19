@@ -1,10 +1,13 @@
 """Command line interface.
 
-Four verbs, no flags to memorise::
+The verbs, shortest first::
 
     clipbait serve                 # dashboard + API on :8000
     clipbait process <url|file>    # long video -> clips, in the terminal
     clipbait live <url|demo>       # watch live chat, clip the spikes
+    clipbait streams --query       # find the biggest live rooms right now
+    clipbait queue --export        # rank ready clips, write upload bundles
+    clipbait check <clip>          # pre-post check: will it be accepted?
     clipbait doctor                # what is installed, what is missing
 
 Everything the CLI does is also available over HTTP; the CLI exists so the
@@ -238,6 +241,108 @@ def cmd_live(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------- check
+
+
+def cmd_check(args: argparse.Namespace) -> int:
+    from .money.check import check_clip, default_campaign, load_campaign
+
+    db.init_db()
+    caption = args.caption or ""
+    hook = ""
+    target = args.clip
+    clip = db.get_clip(args.clip) if args.clip.startswith("clip_") else None
+    if clip:
+        if not clip.get("render_path"):
+            print(f"clip {args.clip} has no render yet")
+            return 1
+        target = storage.resolve(clip["render_path"])
+        hook = str(clip.get("hook") or "")
+        if not caption:
+            body = str(clip.get("hook") or clip.get("title") or "").strip()
+            description = str(clip.get("description") or "").strip()
+            tags = " ".join(clip.get("hashtags") or ())
+            caption = "\n\n".join(part for part in (body, description, tags) if part)
+
+    rules = load_campaign(args.campaign) if args.campaign else default_campaign()
+    report = check_clip(target, caption=caption, hook=hook, rules=rules)
+    if args.json:
+        print(json.dumps(report.as_dict(), indent=2))
+    else:
+        print("\n".join(report.lines()))
+        if report.rules.source != "defaults":
+            print(f"rules: {report.rules.source}")
+    return 0 if report.passed else 1
+
+
+def cmd_check_template(args: argparse.Namespace) -> int:
+    from .money.check import campaigns_dir, template
+
+    target = Path(args.out).expanduser() if args.out else campaigns_dir() / "campaign.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(template(), encoding="utf-8")
+    print(f"wrote {target}")
+    print("fill in the real numbers from the campaign brief, then: clipbait check <clip>")
+    return 0
+
+
+# -------------------------------------------------------------------- streams
+
+
+def cmd_streams(args: argparse.Namespace) -> int:
+    from . import discover
+
+    try:
+        streams = discover.search_live(
+            args.query, args.limit, resolve=not args.no_resolve, timeout=args.timeout
+        )
+    except discover.DiscoverError as exc:
+        print(f"discovery failed: {exc}")
+        return 1
+
+    if args.json:
+        print(json.dumps([stream.as_dict() for stream in streams], indent=2))
+    else:
+        markdown = discover.as_markdown(args.query, streams)
+        if not streams:
+            print(markdown.strip())
+        for index, stream in enumerate(streams, start=1):
+            print(
+                f"  {index:2d}. {stream.viewers:>7,} viewers  {stream.channel[:24]:24}  "
+                f"{stream.title[:52]:52}  {stream.url}"
+            )
+        if streams:
+            print(f"\n  {len(streams)} live stream(s). Biggest room: {streams[0].channel}")
+    if args.out:
+        target = Path(args.out).expanduser()
+        target.write_text(discover.as_markdown(args.query, streams), encoding="utf-8")
+        print(f"wrote {target}")
+
+    if args.watch:
+        if not streams:
+            print("nothing to watch")
+            return 1
+        chosen = streams[0]
+        print(f"\nwatching {chosen.channel} ({chosen.viewers:,} viewers): {chosen.url}\n")
+        return cmd_live(
+            argparse.Namespace(
+                source=chosen.url,
+                threshold=args.threshold,
+                chat_provider="auto",
+                preset=args.preset,
+                region=args.region,
+                platform=args.platform,
+                title=chosen.title[:120],
+                no_clip=False,
+                no_captions=False,
+                no_chat_overlay=False,
+                no_content=False,
+                content_threshold=args.content_threshold,
+            )
+        )
+    return 0
+
+
 # ---------------------------------------------------------------------- queue
 
 
@@ -358,6 +463,34 @@ def build_parser() -> argparse.ArgumentParser:
     queue_cmd.add_argument("--url", help="posted URL for --mark")
     queue_cmd.add_argument("--platform", help="platform for --mark")
     queue_cmd.set_defaults(func=cmd_queue)
+
+    check_cmd = sub.add_parser("check", help="pre-post check of a finished clip")
+    check_cmd.add_argument("clip", help="clip id (clip_...) or path to an mp4")
+    check_cmd.add_argument("--campaign", help="campaign rules file (min_seconds, required_hashtags, ...)")
+    check_cmd.add_argument("--caption", help="caption that will be posted; defaults to the clip's copy")
+    check_cmd.add_argument("--json", action="store_true")
+    check_cmd.set_defaults(func=cmd_check)
+
+    template_cmd = sub.add_parser("campaign", help="write a campaign rules template")
+    template_cmd.add_argument("--out", help="where to write it (default: data/campaigns/campaign.md)")
+    template_cmd.set_defaults(func=cmd_check_template)
+
+    streams_cmd = sub.add_parser("streams", help="find live streams ranked by viewers")
+    streams_cmd.add_argument("--query", default="gta 6")
+    streams_cmd.add_argument("--limit", type=int, default=20)
+    streams_cmd.add_argument("--timeout", type=int, default=60)
+    streams_cmd.add_argument("--no-resolve", action="store_true", help="skip per-stream viewer lookup")
+    streams_cmd.add_argument("--json", action="store_true")
+    streams_cmd.add_argument("--out", help="also write a markdown table here")
+    streams_cmd.add_argument("--watch", action="store_true", help="monitor the biggest room now")
+    streams_cmd.add_argument("--threshold", type=float, default=3.0)
+    streams_cmd.add_argument("--content-threshold", type=float, default=2.5)
+    streams_cmd.add_argument("--preset", default="default")
+    streams_cmd.add_argument("--region", default="US")
+    streams_cmd.add_argument(
+        "--platform", default="tiktok", choices=["tiktok", "reels", "shorts", "linkedin", "x"]
+    )
+    streams_cmd.set_defaults(func=cmd_streams)
 
     doctor = sub.add_parser("doctor", help="report installed capabilities")
     doctor.set_defaults(func=cmd_doctor)

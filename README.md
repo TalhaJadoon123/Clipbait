@@ -145,6 +145,14 @@ clipbait queue --json --min-score 60
 clipbait queue --export
 clipbait queue --mark clip_abc123 --url "https://tiktok.com/@me/video/1"
 
+# Find live rooms by audience, then monitor the biggest one
+clipbait streams --query "gta 6" --limit 15
+clipbait streams --query "gta 6" --watch
+
+# Pre-post check against the campaign rules (exit 1 on a FAIL)
+clipbait campaign
+clipbait check clip_abc123 --campaign data/campaigns/clipmoney.md
+
 # Inspect the environment
 clipbait doctor
 ```

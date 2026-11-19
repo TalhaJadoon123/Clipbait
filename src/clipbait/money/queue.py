@@ -21,6 +21,7 @@ from pathlib import Path
 
 from .. import db, storage
 from ..virality.payout import PayoutReport, estimate
+from .check import CheckReport, check_clip, load_campaign
 
 DEFAULT_MIN_SCORE = 0.0
 
@@ -294,8 +295,16 @@ def mark_uploaded(clip_id: str, *, url: str | None = None, platform: str | None 
     return db.update("clips", clip_id, {"meta": meta})
 
 
-def export_bundle(clip_id: str, *, directory: Path | None = None) -> dict:
+def export_bundle(
+    clip_id: str,
+    *,
+    directory: Path | None = None,
+    campaign: Path | str | None = None,
+) -> dict:
     """Copy the render plus its copy into an upload-ready folder.
+
+    The folder ships with the pre-post check result so a rejected aspect ratio
+    or a missing hashtag is visible before the upload, not after.
 
     Returns a relative-to-data-dir path so the API never leaks absolute paths.
     """
@@ -345,6 +354,16 @@ def export_bundle(clip_id: str, *, directory: Path | None = None) -> dict:
         + "\n",
         encoding="utf-8",
     )
+    report: CheckReport = check_clip(
+        video,
+        caption=caption,
+        hook=item.hook,
+        rules=load_campaign(campaign),
+    )
+    (target / "check.json").write_text(
+        json.dumps(report.as_dict(), indent=2) + "\n", encoding="utf-8"
+    )
+
     readme = (
         f"# {item.title}\n\n"
         f"Post this to **{item.platform}** ({item.region}).\n"
@@ -356,6 +375,10 @@ def export_bundle(clip_id: str, *, directory: Path | None = None) -> dict:
         + "\n```\n\n## Files\n\n- `clip.mp4` - the vertical render, upload as-is\n"
         "- `caption.txt` - paste into the platform caption box\n"
         "- `metadata.json` - machine-readable copy and estimate\n"
+        "- `check.json` - pre-post check result (aspect, fps, audio, duration, words)\n"
+        "\n## Pre-post check\n\n```\n"
+        + "\n".join(report.lines())
+        + "\n```\n"
     )
     (target / "README.md").write_text(readme, encoding="utf-8")
 
@@ -364,7 +387,11 @@ def export_bundle(clip_id: str, *, directory: Path | None = None) -> dict:
         "dir": storage.relative(target),
         "slug": item.slug,
         "platform": item.platform,
-        "files": ["clip.mp4", "caption.txt", "metadata.json", "README.md"],
+        "files": ["clip.mp4", "caption.txt", "metadata.json", "check.json", "README.md"],
         "expected_usd": item.expected_usd,
         "usd_range": [item.usd_low, item.usd_high],
+        "check": {
+            "passed": report.passed,
+            "failures": [row.name for row in report.failures],
+        },
     }
