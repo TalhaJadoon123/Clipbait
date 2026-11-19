@@ -524,6 +524,35 @@ def render_clip_record(
     return updated or clip
 
 
+def _speech_copy(transcript: Transcript) -> tuple[str, str]:
+    """The strongest spoken line in the clip, and the full spoken text.
+
+    A chat-triggered moment is labelled by whatever chat shouted, which is
+    usually a reaction ("WASH YOUR HANDS") rather than the thing that happened.
+    The clip's own audio knows better, so the copy comes from there when there
+    are words to use. The scored import is local because ``clipbait.live``
+    imports this module.
+    """
+    segments = [seg for seg in (transcript.segments or []) if (seg.text or "").strip()]
+    if not segments:
+        return "", ""
+    spoken = " ".join((seg.text or "").strip() for seg in segments)
+    from .live.content import score_speech
+
+    best: tuple[float, str] | None = None
+    for seg in segments:
+        text = (seg.text or "").strip()
+        if len(text.split()) < 3:
+            continue
+        length = max(1.0, float((seg.end or 0.0) - (seg.start or 0.0)))
+        score = score_speech(text, length).score
+        if best is None or score > best[0]:
+            best = (score, text)
+    if best is None:
+        return "", spoken
+    return best[1], spoken
+
+
 def process_live_moment(
     project_id: str,
     moment: dict,
@@ -554,6 +583,12 @@ def process_live_moment(
     title = moment.get("title") or "The chat went wild"
     origin = moment.get("origin") or "chat"
     quote = (moment.get("quote") or "").strip()
+    spoken_line, spoken = _speech_copy(transcript)
+    if not quote and spoken_line:
+        quote = spoken_line
+    if origin == "chat" and spoken_line:
+        # The chat message named a reflex; the stream named the moment.
+        title = f'On stream: "{spoken_line}"'[:90]
     score = int(max(0, min(100, round(moment.get("score", 0) * 10))))
     default_reason = (
         "On-stream signal: something happened worth clipping."
@@ -575,7 +610,7 @@ def process_live_moment(
     )
     # Score the copy on what was actually said, not on the detector's own
     # explanation. A quote is the strongest hook a stream clip can have.
-    live_text = quote or reason or title
+    live_text = quote or spoken or reason or title
     variants = (
         build_variants(highlight, live_text, region, options.platform, limit=options.variants)
         if options.memes

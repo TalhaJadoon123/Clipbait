@@ -605,3 +605,40 @@ def test_cleanup_outputs_removes_the_project_dir(source):
     assert directory.exists()
     pipeline.cleanup_outputs(project["id"])
     assert not directory.exists()
+
+
+def test_a_chat_clip_is_named_by_what_the_streamer_said(transcript, monkeypatch):
+    """Chat names the reflex; the clip's own audio names the moment."""
+    project = make_project(None, chat_overlay=True, clips=1)
+    moment_dir = storage.project_dir(project["id"]) / "source"
+    moment_dir.mkdir(parents=True, exist_ok=True)
+    capture = make_video(moment_dir / "moment.mp4", seconds=4, size="320x180")
+    db.update("projects", project["id"], {"source_path": storage.relative(capture)})
+
+    fixed_transcriber(monkeypatch, transcript)
+    captured: dict = {}
+
+    def fake_render(clip_id, *, transcript=None, on_progress=None):
+        captured["clip"] = db.get_clip(clip_id)
+        return captured["clip"]
+
+    monkeypatch.setattr(pipeline, "render_clip_record", fake_render)
+
+    pipeline.process_live_moment(
+        project["id"],
+        {
+            "monitor_id": "mon_3",
+            "moment_id": "mom_3",
+            "title": 'Chat: "You wash your hands"',
+            "reason": "0.25/s chat velocity",
+            "origin": "chat",
+            "score": 3.1,
+            "messages": [{"t": 1.0, "author": "a", "text": "You wash your hands"}],
+        },
+    )
+
+    clip = captured["clip"]
+    assert clip["meta"]["analysis"] == "live-chat-spike"
+    assert clip["quote"] and "no way" in clip["quote"].lower()
+    assert "wash your hands" not in (clip["hook"] or "").lower()
+    assert "wash your hands" not in (clip["description"] or "").lower()
