@@ -64,9 +64,16 @@ def select(
             selected.append(candidate)
 
     # A weak tail hurts the product: drop anything far below the best clip.
+    # The absolute floor only applies when the best clip clears it. Casual
+    # dialogue often scores in the low 20s across the board, and an absolute
+    # floor would then discard every candidate and return an empty project;
+    # keeping the relative best is always better than returning nothing.
     if selected:
         ceiling = selected[0].scores.overall
-        selected = [h for h in selected if h.scores.overall >= max(25, ceiling * 0.55)]
+        floor = ceiling * 0.55
+        if ceiling >= 25:
+            floor = max(25.0, floor)
+        selected = [h for h in selected if h.scores.overall >= floor]
 
     selected.sort(key=lambda h: h.start)
     normalise(selected)

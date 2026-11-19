@@ -53,6 +53,26 @@ def test_select_drops_a_weak_tail() -> None:
     assert len(chosen) == 2
 
 
+def test_select_keeps_its_best_clips_when_every_score_is_low() -> None:
+    # Casual dialogue scores in the low 20s everywhere; an absolute floor of
+    # 25 would drop the lot and hand the user an empty project.
+    candidates = [
+        highlight(0, 60, 23),
+        highlight(100, 160, 22),
+        highlight(200, 260, 19),
+    ]
+    chosen = select(candidates, max_clips=5)
+    assert [h.start for h in chosen] == [0, 100, 200]
+
+
+def test_select_still_drops_a_weak_tail_below_the_relative_floor() -> None:
+    # Best candidate is below the absolute floor, but the relative floor still
+    # trims a genuinely weak tail rather than keeping everything.
+    candidates = [highlight(0, 60, 24), highlight(100, 160, 12)]
+    chosen = select(candidates, max_clips=5)
+    assert [h.start for h in chosen] == [0]
+
+
 def test_normalise_caps_the_best_clip_at_92() -> None:
     highlights = [highlight(0, 60, 100), highlight(100, 160, 50)]
     normalise(highlights)
