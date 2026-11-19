@@ -1,0 +1,382 @@
+"""End-to-end orchestration.
+
+One test renders a real clip through the whole chain (tiny source, short
+output). Everything else drives the same branches with the renderer patched, so
+the suite stays fast while still covering the real control flow.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from helpers import FixedTranscriber, make_video, scripted_transcript
+
+from clipbait import db, media, pipeline, storage
+from clipbait.ingest import IngestResult
+from clipbait.schema import Highlight, ProjectOptions, Transcript, TranscriptSegment, Word
+
+SOURCE_SECONDS = 48.0
+
+
+@pytest.fixture(scope="module")
+def source(tmp_path_factory) -> Path:
+    return make_video(
+        tmp_path_factory.mktemp("media") / "source.mp4",
+        seconds=SOURCE_SECONDS,
+        size="320x180",
+    )
+
+
+@pytest.fixture(scope="module")
+def transcript():
+    return scripted_transcript(SOURCE_SECONDS)
+
+
+def make_project(source_path: Path | None, *, source_url: str | None = None, **options) -> dict:
+    return db.create_project(
+        {
+            "title": "Pipeline test",
+            "source_kind": "local",
+            "source_url": source_url,
+            "source_path": storage.relative(source_path) if source_path else None,
+            "duration": SOURCE_SECONDS,
+            "options": ProjectOptions(**options).model_dump(),
+        }
+    )
+
+
+def fixed_transcriber(monkeypatch, transcript) -> FixedTranscriber:
+    transcriber = FixedTranscriber(transcript)
+    monkeypatch.setattr("clipbait.transcribe.get_transcriber", lambda *a, **k: transcriber)
+    return transcriber
+
+
+def test_process_project_renders_a_clip(source, transcript, monkeypatch):
+    project = make_project(
+        source,
+        clips=1,
+        target_seconds=15,
+        meme_inserts=True,
+        meme_insert_seconds=1.2,
+        meme_max_inserts=1,
+    )
+    fixed_transcriber(monkeypatch, transcript)
+
+    result = pipeline.process_project(project["id"])
+
+    assert result["project_id"] == project["id"]
+    assert result["clips"] == 1
+    assert result["transcriber"] == "fixture"
+
+    stored = db.get_project(project["id"])
+    assert stored["status"] == "completed"
+    assert stored["error"] is None
+
+    clips = db.list_clips(project["id"])
+    assert len(clips) == 1
+    clip = clips[0]
+    assert clip["status"] == "ready"
+    rendered = storage.resolve(clip["render_path"])
+    assert rendered.exists() and rendered.stat().st_size > 0
+    assert storage.resolve(clip["thumb_path"]).exists()
+
+    meta = clip["meta"]
+    assert meta["insert_count"] == len(meta["inserts"])
+    assert meta["layout"] in {"center", "track", "blur", "split"}
+    assert clip["score"] >= 0
+    # The transcript cache is written so a retry never pays for Whisper twice.
+    assert storage.transcript_path(project["id"]).exists()
+
+
+def test_process_project_reuses_the_cached_transcript(source, transcript, monkeypatch):
+    project = make_project(source, clips=1, target_seconds=15)
+    transcriber = fixed_transcriber(monkeypatch, transcript)
+    renders: list[str] = []
+
+    def fake_render(clip_id, *, transcript=None, on_progress=None):
+        if on_progress:
+            on_progress(0.5, "encoding")
+        renders.append(clip_id)
+        return {}
+
+    monkeypatch.setattr(pipeline, "render_clip_record", fake_render)
+    calls = {"n": 0}
+    original = transcriber.transcribe
+
+    def counted(audio, language="auto"):
+        calls["n"] += 1
+        return original(audio, language)
+
+    transcriber.transcribe = counted  # type: ignore[method-assign]
+
+    pipeline.process_project(project["id"])
+    pipeline.process_project(project["id"])
+
+    assert calls["n"] == 1
+    assert len(renders) == 2  # one clip per run
+
+
+def test_process_project_keeps_going_when_one_clip_fails(source, transcript, monkeypatch):
+    project = make_project(source, clips=2, target_seconds=15)
+    fixed_transcriber(monkeypatch, transcript)
+
+    highlights = [
+        Highlight(start=0.0, end=14.0, title="First", hook="First", scores={"overall": 80}),
+        Highlight(start=20.0, end=34.0, title="Second", hook="Second", scores={"overall": 70}),
+    ]
+    monkeypatch.setattr(
+        pipeline.analyze, "analyze", lambda *a, **k: (highlights, {"provider": "stub"})
+    )
+
+    attempts: list[str] = []
+
+    def flaky(clip_id, *, transcript=None, on_progress=None):
+        attempts.append(clip_id)
+        if len(attempts) == 1:
+            raise media.MediaError("boom")
+        return {}
+
+    monkeypatch.setattr(pipeline, "render_clip_record", flaky)
+
+    result = pipeline.process_project(project["id"])
+
+    assert result["clips"] == 1
+    statuses = {clip["title"]: clip["status"] for clip in db.list_clips(project["id"])}
+    assert statuses["First"] == "failed"
+    assert statuses["Second"] != "failed"
+    first = next(clip for clip in db.list_clips(project["id"]) if clip["title"] == "First")
+    assert "boom" in first["meta"]["error"]
+
+
+def test_process_project_fails_when_every_clip_fails(source, transcript, monkeypatch):
+    project = make_project(source, clips=1, target_seconds=15)
+    fixed_transcriber(monkeypatch, transcript)
+    monkeypatch.setattr(
+        pipeline,
+        "render_clip_record",
+        lambda *a, **k: (_ for _ in ()).throw(media.MediaError("no encoder")),
+    )
+
+    with pytest.raises(media.MediaError, match="every clip failed"):
+        pipeline.process_project(project["id"])
+
+
+def test_process_project_reports_no_moments(source, transcript, monkeypatch):
+    project = make_project(source, clips=1, target_seconds=15)
+    fixed_transcriber(monkeypatch, transcript)
+    monkeypatch.setattr(
+        pipeline.analyze, "analyze", lambda *a, **k: ([], {"provider": "stub"})
+    )
+
+    with pytest.raises(ValueError, match="No clip-worthy moments"):
+        pipeline.process_project(project["id"])
+
+
+def test_process_project_rejects_unknown_ids():
+    with pytest.raises(ValueError, match="unknown project"):
+        pipeline.process_project("proj_missing")
+
+
+def test_ensure_source_reuses_an_existing_file(source, monkeypatch):
+    project = make_project(source)
+    called = {"ingest": False}
+
+    def fail(*a, **k):
+        called["ingest"] = True
+        raise AssertionError("should not re-ingest")
+
+    monkeypatch.setattr(pipeline, "ingest_source", fail)
+    assert pipeline.ensure_source(project, None)["id"] == project["id"]
+    assert called["ingest"] is False
+
+
+def test_ensure_source_downloads_a_missing_source(source, monkeypatch):
+    project = make_project(None, source_url="https://example.com/watch?v=1")
+    monkeypatch.setattr(
+        pipeline,
+        "ingest_source",
+        lambda proj, job_id=None, on_progress=None: (
+            on_progress(0.5, "halfway") if on_progress else None
+        )
+        or IngestResult(
+            path=source,
+            title="Downloaded title",
+            duration=SOURCE_SECONDS,
+            source_kind="youtube",
+        ),
+    )
+
+    updated = pipeline.ensure_source(project, None)
+
+    assert updated["title"] == "Downloaded title"
+    assert updated["duration"] == SOURCE_SECONDS
+    assert Path(updated["source_path"]).name == source.name
+
+
+def test_ensure_source_needs_a_url_or_path():
+    project = make_project(None)
+    with pytest.raises(media.MediaError, match="no source URL"):
+        pipeline.ensure_source(project, None)
+
+
+def test_ingest_source_local_and_remote(source, monkeypatch):
+    local = make_project(source, source_kind="local")
+    result = pipeline.ingest_source(local)
+    assert result.source_kind == "local"
+    assert Path(result.path).exists()
+    assert Path(result.path).stat().st_size == source.stat().st_size
+
+    remote = make_project(None, source_url="https://example.com/v")
+    monkeypatch.setattr(
+        "clipbait.ingest.fetch_remote",
+        lambda url, project_id, on_progress=None: IngestResult(
+            path=source, title=url, duration=1.0, source_kind="upload"
+        ),
+    )
+    fetched = pipeline.ingest_source(remote)
+    assert fetched.source_kind == "upload"
+
+
+def test_ingest_source_without_url_is_an_error():
+    project = make_project(None)
+    with pytest.raises(ValueError, match="missing source"):
+        pipeline.ingest_source(project)
+
+
+def test_create_clip_without_memes(transcript):
+    project = make_project(None, memes=False)
+    highlight = Highlight(start=0.0, end=10.0, title="Hi", hook="Hi", quote="hello")
+    clip = pipeline._create_clip(
+        project["id"], highlight, ProjectOptions(memes=False), {"provider": "x"}, transcript
+    )
+    assert clip["meta"]["variants"] == []
+    assert clip["title"]
+
+
+def test_render_clip_record_error_branches(source, transcript):
+    with pytest.raises(ValueError, match="unknown clip"):
+        pipeline.render_clip_record("clip_missing")
+
+    project = make_project(None)
+    clip = db.create_clip(
+        {
+            "project_id": project["id"],
+            "title": "No source",
+            "hook": "No source",
+            "start": 0.0,
+            "end": 5.0,
+        }
+    )
+    with pytest.raises(ValueError, match="project source missing"):
+        pipeline.render_clip_record(clip["id"])
+
+    project2 = make_project(source)
+    monkeypatch_clip = db.create_clip(
+        {
+            "project_id": project2["id"],
+            "title": "No transcript",
+            "hook": "No transcript",
+            "start": 0.0,
+            "end": 5.0,
+        }
+    )
+    with pytest.raises(ValueError, match="transcript missing"):
+        pipeline.render_clip_record(monkeypatch_clip["id"])
+
+
+def test_render_clip_inserts_broll_between_sentences(source):
+    """A real 6s render with one gap-triggered b-roll cutaway."""
+    project = make_project(source, clips=1, target_seconds=15)
+    words = [
+        Word(text="one", start=0.3, end=0.7),
+        Word(text="two", start=0.8, end=1.2),
+        Word(text="three.", start=1.3, end=1.7),
+        # 2.0s of dead air -> a natural seam
+        Word(text="four", start=3.7, end=4.1),
+        Word(text="five", start=4.2, end=4.6),
+    ]
+    transcript = Transcript(
+        language="en",
+        duration=6.0,
+        words=words,
+        segments=[TranscriptSegment(text="one two three.", start=0.3, end=1.7)],
+        provider="fixture",
+    )
+    clip = db.create_clip(
+        {
+            "project_id": project["id"],
+            "title": "B-roll",
+            "hook": "B-roll",
+            "start": 0.0,
+            "end": 6.0,
+            "caption_preset": "default",
+            "reframe_mode": "center",
+            "meta": {
+                "meme_inserts": True,
+                "meme_insert_seconds": 1.2,
+                "meme_max_inserts": 1,
+            },
+        }
+    )
+
+    updated = pipeline.render_clip_record(clip["id"], transcript=transcript)
+
+    assert updated["status"] == "ready"
+    assert updated["meta"]["insert_count"] == 1
+    assert len(updated["meta"]["inserts"]) == 1
+    assert storage.resolve(updated["meta"]["inserts"][0]["path"]).exists()
+    assert storage.resolve(updated["render_path"]).exists()
+
+
+def test_process_live_moment(transcript, monkeypatch, tmp_path):
+    project = make_project(None, chat_overlay=True, clips=1)
+    moment_dir = storage.project_dir(project["id"]) / "source"
+    moment_dir.mkdir(parents=True, exist_ok=True)
+    capture = make_video(moment_dir / "moment.mp4", seconds=4, size="320x180")
+    db.update("projects", project["id"], {"source_path": storage.relative(capture)})
+
+    fixed_transcriber(monkeypatch, transcript)
+    captured: dict = {}
+
+    def fake_render(clip_id, *, transcript=None, on_progress=None):
+        captured["clip"] = db.get_clip(clip_id)
+        if on_progress:
+            on_progress(1.0, "rendered")
+        return captured["clip"]
+
+    monkeypatch.setattr(pipeline, "render_clip_record", fake_render)
+
+    result = pipeline.process_live_moment(
+        project["id"],
+        {
+            "monitor_id": "mon_1",
+            "moment_id": "mom_1",
+            "title": "Chat went wild",
+            "reason": "rate spike",
+            "score": 8.4,
+            "messages": [{"t": 1.0, "author": "a", "text": "CLIP IT"}],
+        },
+    )
+
+    assert result["clip_id"]
+    clip = captured["clip"]
+    assert clip["meta"]["live"] is True
+    assert clip["meta"]["monitor_id"] == "mon_1"
+    assert clip["meta"]["chat"][0]["text"] == "CLIP IT"
+    assert clip["score"] == 84
+    assert db.get_project(project["id"])["status"] == "completed"
+
+
+def test_process_live_moment_requires_a_capture():
+    project = make_project(None)
+    with pytest.raises(ValueError, match="no source"):
+        pipeline.process_live_moment(project["id"], {"title": "x"})
+
+
+def test_cleanup_outputs_removes_the_project_dir(source):
+    project = make_project(source)
+    directory = storage.project_dir(project["id"])
+    assert directory.exists()
+    pipeline.cleanup_outputs(project["id"])
+    assert not directory.exists()

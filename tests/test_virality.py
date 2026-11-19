@@ -179,3 +179,128 @@ def test_broken_region_overrides_are_ignored(monkeypatch) -> None:
 
     monkeypatch.setenv("CLIPBAIT_REGION_OVERRIDES", "{not json")
     assert module._apply_overrides(module.REGIONS) == module.REGIONS
+
+# ------------------------------------------------------- extended coverage
+
+
+def test_region_profile_round_trips_to_dict() -> None:
+    data = get_region("BR").as_dict()
+    assert data["code"] == "BR"
+    assert isinstance(data["hashtags"], list)
+    assert isinstance(data["slang"], list)
+
+
+def test_platform_limits_known_and_unknown() -> None:
+    assert platform_limits("tiktok")["title"] == 100
+    assert platform_limits("x")["caption"] == 280
+    assert platform_limits("myspace")["hashtags"] == 6
+
+
+def test_region_overrides_handle_scalars_lists_and_bad_patches(monkeypatch) -> None:
+    import json as _json
+
+    from clipbait.virality import regions as module
+
+    monkeypatch.setenv(
+        "CLIPBAIT_REGION_OVERRIDES",
+        _json.dumps(
+            {
+                "in": {
+                    "cta": "Comment GUIDE",
+                    "slang": "bhai, scene",
+                    "emoji_density": 1,
+                    "nonsense": "ignored",
+                    "code": "XX",
+                },
+                "US": "not a dict",
+            }
+        ),
+    )
+    merged = module._apply_overrides(module.REGIONS)
+    india = merged["IN"]
+    assert india.cta == "Comment GUIDE"
+    assert india.slang == ("bhai", "scene")
+    assert india.emoji_density == 1
+    assert india.code == "IN"  # identity fields are immutable
+    assert merged["US"].cta == module.REGIONS["US"].cta
+
+
+def test_every_meme_is_well_formed() -> None:
+    ids = [meme.id for meme in MEMES]
+    assert len(ids) == len(set(ids))
+    for meme in MEMES:
+        assert meme.platforms
+        assert meme.signals
+        assert meme.pattern
+
+
+def test_trim_and_title_case() -> None:
+    from clipbait.virality.packaging import _title_case_hook, _trim
+
+    assert _trim("  hello   world  ", 50) == "hello world"
+    assert _trim("one two three four", 11) == "one two…"
+    assert _trim("", 10) == ""
+    assert _title_case_hook("hello there", 20) == "Hello there"
+    assert _title_case_hook("", 20) == ""
+
+
+def test_emoji_sets_follow_region_density() -> None:
+    from clipbait.virality.packaging import _emoji
+
+    assert _emoji(get_region("DE"), 0) == ""
+    usa = get_region("US")
+    assert _emoji(usa, 0) == "🔥"
+    assert _emoji(usa, 10) == ""
+    assert _emoji(get_region("IN"), 1) == "😳"
+
+
+def test_hashtags_clean_and_cap() -> None:
+    from clipbait.virality.packaging import _hashtags
+
+    tags = _hashtags(
+        get_region("US"),
+        ["right", "growth", "growth", "AI Agents", "ab"],
+        "reels",
+    )
+    assert tags[0].startswith("#")
+    assert "#growth" in tags
+    assert any(tag.lower() == "#aiagents" for tag in tags)
+    assert len(tags) <= platform_limits("reels")["hashtags"]
+    assert all(not tag.startswith("##") for tag in tags)
+
+
+def test_build_variants_without_signals_is_literal() -> None:
+    quiet = highlight(hook="A quiet observation", reason="")
+    variants = build_variants(quiet, "A quiet observation", get_region("DE"), "linkedin")
+    assert [variant["id"] for variant in variants] == ["organic", "cta"]
+
+
+def test_best_posting_time() -> None:
+    assert best_posting_time(get_region("US")) == get_region("US").posting_windows[0]
+
+
+def test_forecast_penalises_long_clips_and_secondary_platforms() -> None:
+    result = forecast(
+        highlight().scores,
+        "plain text",
+        get_region("DE"),
+        "x",
+        duration=120,
+        meme={"match": 0.2, "risk": "medium"},
+    )
+    assert result["meme_fit"] == 10  # medium-risk haircut, floored at 0
+    assert any("Long for Shorts" in reason for reason in result["reasons"])
+    assert any("secondary" in reason for reason in result["reasons"])
+
+
+def test_forecast_without_a_meme_or_region() -> None:
+    result = forecast(highlight().scores, "", None, "reels", duration=20)
+    assert result["meme_fit"] == 0
+    assert result["overall"] >= 0
+    assert get_region(None).code == "US"
+
+
+def test_region_catalog_matches_the_module() -> None:
+    from clipbait.virality.packaging import region_catalog
+
+    assert region_catalog() == catalog()

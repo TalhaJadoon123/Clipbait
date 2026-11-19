@@ -1,0 +1,794 @@
+"""Live clipping: chat transports, the rolling recorder and the orchestrator.
+
+Networks are faked at the seam (socket, httpx, pytchat, the yt-dlp shell-out)
+so every transport's real parsing code runs without a live stream.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import json
+import sys
+import types
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from helpers import make_video
+
+from clipbait import db, live, storage
+from clipbait.config import get_settings
+from clipbait.live import chat, recorder
+from clipbait.live.orchestrator import LiveRunner
+from clipbait.live.spikes import MomentCandidate
+from clipbait.schema import ChatMessage, SpikeSignal
+
+# ----------------------------------------------------------------------- helpers
+
+
+def no_sleep(monkeypatch):
+    monkeypatch.setattr("clipbait.live.chat.time.sleep", lambda *_: None)
+    monkeypatch.setattr("clipbait.live.recorder.time.sleep", lambda *_: None)
+
+
+class FakeRecorder(recorder.Recorder):
+    kind = "fake"
+
+    def __init__(self) -> None:
+        self.started = 0
+        self.stopped = 0
+        self.slices: list[tuple[float, float, Path]] = []
+        self.clear_calls = 0
+
+    def start(self) -> None:
+        self.started += 1
+
+    def stop(self) -> None:
+        self.stopped += 1
+
+    def slice(self, start, end, out):
+        self.slices.append((start, end, out))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"0" * 20_000)
+        return out
+
+    def stats(self) -> dict:
+        return {"kind": self.kind, "slices": len(self.slices)}
+
+
+class FakeChat(chat.ChatSource):
+    name = "fake"
+
+    def __init__(self, messages=(), error: Exception | None = None) -> None:
+        super().__init__()
+        self._messages = list(messages)
+        self._error = error
+        self.closed = False
+
+    def messages(self):
+        yield from self._messages
+        if self._error:
+            raise self._error
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeDetector:
+    """Fires exactly once, on the first message."""
+
+    def __init__(self, candidate: MomentCandidate) -> None:
+        self.candidate = candidate
+        self.fired = False
+
+    def add(self, message):
+        if self.fired:
+            return None
+        self.fired = True
+        return self.candidate
+
+    def current_rate(self) -> float:
+        return 12.5
+
+    def timeline(self, _buckets: int) -> list:
+        return [1, 2, 3]
+
+
+def make_monitor(**options) -> dict:
+    return db.create_monitor(
+        {
+            "url": "https://www.youtube.com/watch?v=abcdefghijk",
+            "title": "Live test",
+            "status": "idle",
+            "options": options,
+        }
+    )
+
+
+def candidate(**overrides) -> MomentCandidate:
+    return MomentCandidate(
+        start=5.0,
+        end=9.0,
+        trigger_at=9.0,
+        score=4.2,
+        signal=SpikeSignal(rate=11.0, rate_z=4.0, top_messages=["CLIP IT"]),
+        messages=[
+            ChatMessage(t=5.2, author="a", text="CLIP IT"),
+            ChatMessage(t=8.0, author="b", text="W"),
+            ChatMessage(t=20.0, author="c", text="outside window"),
+        ],
+        **overrides,
+    )
+
+
+# ------------------------------------------------------------------- chat: urls
+
+
+def test_youtube_video_id_variants():
+    assert chat.youtube_video_id("https://youtu.be/dQw4w9WgXcQ") == "dQw4w9WgXcQ"
+    assert chat.youtube_video_id("https://www.youtube.com/live/abcdefghijk?x=1") == "abcdefghijk"
+    assert chat.youtube_video_id("https://www.youtube.com/shorts/abcdefghijk") == "abcdefghijk"
+    assert chat.youtube_video_id("https://www.youtube.com/embed/abcdefghijk") == "abcdefghijk"
+    assert chat.youtube_video_id("abcdefghijk") == "abcdefghijk"
+    with pytest.raises(chat.ChatError):
+        chat.youtube_video_id("https://example.com/nope")
+
+
+def test_module_probe():
+    assert chat._module("json") is True
+    assert chat._module("definitely_not_a_module_xyz") is False
+
+
+def test_resolve_chat_source_kinds(monkeypatch):
+    assert isinstance(chat.resolve_chat_source("demo://live"), chat.DemoChatSource)
+    assert isinstance(chat.resolve_chat_source("https://x", provider="demo"), chat.DemoChatSource)
+    assert isinstance(
+        chat.resolve_chat_source("https://twitch.tv/someone"), chat.TwitchChatSource
+    )
+    assert isinstance(
+        chat.resolve_chat_source("https://youtube.com/watch?v=abcdefghijk"),
+        chat.YouTubeChatSource,
+    )
+    assert isinstance(
+        chat.resolve_chat_source(
+            "https://youtube.com/watch?v=abcdefghijk", provider="api", api_key="k"
+        ),
+        chat.YouTubeApiChatSource,
+    )
+    monkeypatch.setattr(chat, "_module", lambda _name: False)
+    assert isinstance(
+        chat.resolve_chat_source(
+            "https://youtube.com/watch?v=abcdefghijk", provider="auto", api_key="k"
+        ),
+        chat.YouTubeApiChatSource,
+    )
+    with pytest.raises(chat.ChatError):
+        chat.resolve_chat_source("https://example.com/stream")
+
+
+def test_jsonl_chat_source(tmp_path):
+    path = tmp_path / "chat.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                json.dumps({"t": 0.0, "author": "a", "text": "hi"}),
+                "not json",
+                json.dumps({"t": 0.001, "author": "b", "text": "there", "kind": "superchat"}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    source = chat.JsonlChatSource(path, speed=1000)
+    messages = list(source.messages())
+    assert [message.text for message in messages] == ["hi", "there"]
+    assert messages[1].kind == "superchat"
+
+
+def test_demo_chat_source_burst_and_calm(monkeypatch):
+    no_sleep(monkeypatch)
+    source = chat.DemoChatSource(seed=3)
+    monkeypatch.setattr(source, "elapsed", lambda: 20.0)
+    stream = source.messages()
+    burst = [next(stream) for _ in range(3)]
+    assert all(message.text for message in burst)
+    source.close()
+    assert source._stop.is_set()
+
+    calm_source = chat.DemoChatSource(seed=4)
+    monkeypatch.setattr(calm_source, "elapsed", lambda: 1.0)
+    calm = next(calm_source.messages())
+    assert calm.author.startswith("viewer")
+
+
+def test_pytchat_source(monkeypatch):
+    no_sleep(monkeypatch)
+    items = [
+        SimpleNamespace(message="hello", amountValue=0, author=SimpleNamespace(name="bob")),
+        SimpleNamespace(message="", amountValue=0, author=None),
+        SimpleNamespace(message="tip", amountValue=5, author=SimpleNamespace(name="ann")),
+    ]
+
+    class FakeChat:
+        def __init__(self):
+            self.reads = 0
+
+        def is_alive(self):
+            return self.reads < 2
+
+        def get(self):
+            self.reads += 1
+            return SimpleNamespace(items=items if self.reads == 1 else [])
+
+    module = types.ModuleType("pytchat")
+    module.create = lambda **kwargs: FakeChat()
+    monkeypatch.setitem(sys.modules, "pytchat", module)
+
+    source = chat.YouTubeChatSource("https://youtu.be/abcdefghijk")
+    messages = list(source.messages())
+
+    assert [message.text for message in messages] == ["hello", "tip"]
+    assert messages[0].author == "bob"
+    assert messages[1].kind == "superchat"
+
+
+def test_pytchat_missing_is_explained(monkeypatch):
+    monkeypatch.setitem(sys.modules, "pytchat", None)
+    source = chat.YouTubeChatSource("https://youtu.be/abcdefghijk")
+    with pytest.raises(chat.ChatError, match="pytchat is not installed"):
+        list(source.messages())
+
+
+def test_youtube_api_source(monkeypatch):
+    calls: list[str] = []
+
+    class Response:
+        def __init__(self, payload, status=200):
+            self._payload = payload
+            self.status_code = status
+            self.text = "err"
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, params=None, timeout=None):
+        calls.append(url)
+        if "videos" in url:
+            return Response({"items": [{"liveStreamingDetails": {"activeLiveChatId": "lc"}}]})
+        if len(calls) == 2:
+            return Response(
+                {
+                    "items": [
+                        {
+                            "snippet": {"displayMessage": " hi ", "superChatDetails": {"x": 1}},
+                            "authorDetails": {"displayName": "ann"},
+                        },
+                        {"snippet": {"displayMessage": ""}},
+                    ],
+                    "nextPageToken": "tok",
+                }
+            )
+        raise chat.ChatError("done")
+
+    monkeypatch.setattr("httpx.get", fake_get)
+    source = chat.YouTubeApiChatSource("https://youtu.be/abcdefghijk", "key")
+    stream = source.messages()
+    first = next(stream)
+    assert first.text == "hi"
+    assert first.kind == "superchat"
+    assert first.author == "ann"
+    with pytest.raises(chat.ChatError, match="done"):
+        next(stream)
+
+
+def test_youtube_api_errors(monkeypatch):
+    class Response:
+        status_code = 403
+        text = "quota"
+
+        def json(self):
+            return {}
+
+    monkeypatch.setattr("httpx.get", lambda *a, **k: Response())
+    source = chat.YouTubeApiChatSource("https://youtu.be/abcdefghijk", "key")
+    with pytest.raises(chat.ChatError, match="403"):
+        list(source.messages())
+
+    class Empty:
+        status_code = 200
+
+        def json(self):
+            return {"items": []}
+
+    monkeypatch.setattr("httpx.get", lambda *a, **k: Empty())
+    with pytest.raises(chat.ChatError, match="video not found"):
+        list(source.messages())
+
+    class NoChat:
+        status_code = 200
+
+        def json(self):
+            return {"items": [{"liveStreamingDetails": {}}]}
+
+    monkeypatch.setattr("httpx.get", lambda *a, **k: NoChat())
+    with pytest.raises(chat.ChatError, match="no active live chat"):
+        list(source.messages())
+
+
+def test_twitch_reader_parses_irc(monkeypatch):
+    payload = (
+        b"PING :tmi.twitch.tv\r\n"
+        b":bob!bob@bob.tmi.twitch.tv PRIVMSG #chan :hello chat\r\n"
+        b":garbage line\r\n"
+        b":ann!ann@ann.tmi PRIVMSG #chan :second\r\n"
+    )
+    sent: list[bytes] = []
+
+    class Sock:
+        def __init__(self):
+            self.chunks = [payload, b""]
+
+        def sendall(self, data):
+            sent.append(data)
+
+        def recv(self, _size):
+            return self.chunks.pop(0) if self.chunks else b""
+
+        def close(self):
+            pass
+
+    class Context:
+        def wrap_socket(self, sock, **_kwargs):
+            return sock
+
+    monkeypatch.setattr("socket.create_connection", lambda *a, **k: Sock())
+    monkeypatch.setattr("ssl.create_default_context", lambda: Context())
+
+    source = chat.TwitchChatSource("https://twitch.tv/chan")
+    assert source.channel == "chan"
+    source._reader()
+
+    messages = []
+    while True:
+        item = source._queue.get_nowait()
+        if item is None:
+            break
+        messages.append(item)
+    assert [message.text for message in messages] == ["hello chat", "second"]
+    assert messages[0].author == "bob"
+    assert any(b"PONG" in chunk for chunk in sent)
+    assert any(b"JOIN #chan" in chunk for chunk in sent)
+
+
+# -------------------------------------------------------------------- recorder
+
+
+def test_select_segments():
+    assert recorder.select_segments([], 0, 10) == ([], 0.0)
+    segments = [
+        recorder.Segment(Path("a.ts"), 0.0, 4.0),
+        recorder.Segment(Path("b.ts"), 4.0, 4.0),
+    ]
+    assert recorder.select_segments(segments, 100, 110) == ([], 0.0)
+    chosen, offset = recorder.select_segments(segments, 2.0, 6.0)
+    assert [s.path.name for s in chosen] == ["a.ts", "b.ts"]
+    assert offset == 2.0
+
+
+def test_concat_file(tmp_path):
+    path = recorder.concat_file(
+        [recorder.Segment(tmp_path / "a.ts", 0, 1)], tmp_path / "list.txt"
+    )
+    text = path.read_text()
+    assert text.startswith("ffconcat version 1.0")
+    assert "a.ts" in text
+
+
+def test_build_recorder_variants(monkeypatch, tmp_path):
+    tiny = make_video(tmp_path / "tiny.mp4", seconds=1, size="160x90")
+    monkeypatch.setattr(recorder, "ensure_demo_source", lambda path, seconds=240: tiny)
+    assert isinstance(recorder.build_recorder("demo://live", tmp_path), recorder.DemoRecorder)
+    assert isinstance(
+        recorder.build_recorder("https://twitch.tv/x", tmp_path), recorder.HlsRecorder
+    )
+    assert isinstance(
+        recorder.build_recorder("https://youtube.com/watch?v=a", tmp_path), recorder.HlsRecorder
+    )
+    with pytest.raises(recorder.RecorderError):
+        recorder.build_recorder("https://example.com/x", tmp_path)
+
+
+def test_ensure_demo_source(monkeypatch, tmp_path):
+    existing = tmp_path / "demo.mp4"
+    existing.write_bytes(b"data")
+    assert recorder.ensure_demo_source(existing) == existing
+
+    target = tmp_path / "generated.mp4"
+    made = recorder.ensure_demo_source(target, seconds=1)
+    assert made.exists() and made.stat().st_size > 0
+
+
+def test_resolve_live_stream(monkeypatch):
+    monkeypatch.setattr(
+        recorder.media,
+        "run",
+        lambda *a, **k: SimpleNamespace(stdout="\nnot-a-url\nhttps://cdn/stream.m3u8\n"),
+    )
+    assert recorder.resolve_live_stream("https://twitch.tv/x") == "https://cdn/stream.m3u8"
+
+    monkeypatch.setattr(recorder.media, "run", lambda *a, **k: SimpleNamespace(stdout=""))
+    with pytest.raises(recorder.RecorderError):
+        recorder.resolve_live_stream("https://twitch.tv/x")
+
+
+def test_hls_watch_and_prune(monkeypatch, tmp_path):
+    rec = recorder.HlsRecorder("https://twitch.tv/x", tmp_path, segment_seconds=4)
+    (tmp_path / "seg_000000.ts").write_bytes(b"a")
+    (tmp_path / "seg_000001.ts").write_bytes(b"b")
+    (tmp_path / "segments.csv").write_text(
+        "seg_000000.ts,4.0\nseg_000001.ts,not-a-number\nseg_000001.ts,4.0\n"
+    )
+
+    def stop_after_first(*_args):
+        rec._stop.set()
+
+    monkeypatch.setattr("clipbait.live.recorder.time.sleep", stop_after_first)
+    rec._watch(tmp_path / "segments.csv")
+
+    assert [segment.path.name for segment in rec._segments] == ["seg_000000.ts", "seg_000001.ts"]
+    assert rec._segments[1].start == 4.0
+
+    settings = dataclasses.replace(get_settings(), live_buffer_seconds=2)
+    monkeypatch.setattr(recorder, "get_settings", lambda: settings)
+    rec._prune()
+    assert [segment.path.name for segment in rec._segments] == ["seg_000001.ts"]
+    assert not (tmp_path / "seg_000000.ts").exists()
+    assert rec.stats()["buffered_seconds"] == 4.0
+
+    rec._segments.clear()
+    rec._prune()  # no segments: no-op
+    assert rec.stats()["buffered_seconds"] == 0.0
+
+
+def test_hls_slice(monkeypatch, tmp_path):
+    rec = recorder.HlsRecorder("https://twitch.tv/x", tmp_path)
+    with pytest.raises(recorder.RecorderError, match="older than the ring buffer"):
+        rec.slice(10, 20, tmp_path / "out.mp4")
+
+    (tmp_path / "seg_000000.ts").write_bytes(b"a")
+    (tmp_path / "seg_000001.ts").write_bytes(b"b")
+    rec._segments = [
+        recorder.Segment(tmp_path / "seg_000000.ts", 0.0, 4.0),
+        recorder.Segment(tmp_path / "seg_000001.ts", 4.0, 4.0),
+    ]
+
+    def fake_run(cmd, **_kwargs):
+        Path(cmd[-1]).write_bytes(b"video")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(recorder.media, "run", fake_run)
+    out = rec.slice(2.0, 6.0, tmp_path / "out.mp4")
+
+    assert out.exists()
+    concat = (tmp_path / "slice.ffconcat").read_text()
+    assert "seg_000000.ts" in concat and "seg_000001.ts" in concat
+
+
+def test_hls_start_and_stop(monkeypatch, tmp_path):
+    monkeypatch.setattr(recorder, "resolve_live_stream", lambda _url: "https://cdn/x.m3u8")
+    monkeypatch.setattr("clipbait.live.recorder.time.sleep", lambda *_: None)
+
+    class Proc:
+        def __init__(self, cmd, **_kwargs):
+            self.cmd = cmd
+            self.terminated = False
+            self.killed = False
+            self.stdout = None
+            self.stderr = None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            self.killed = True
+
+    procs: list[Proc] = []
+
+    def fake_popen(cmd, **kwargs):
+        proc = Proc(cmd, **kwargs)
+        procs.append(proc)
+        return proc
+
+    monkeypatch.setattr("clipbait.live.recorder.subprocess.Popen", fake_popen)
+    rec = recorder.HlsRecorder("https://twitch.tv/x", tmp_path)
+    rec.start()
+    assert procs and "-segment_time" in procs[0].cmd
+    rec.stop()
+    assert rec._stop.is_set()
+    assert procs[0].terminated
+
+
+def test_file_and_demo_recorder(tmp_path):
+    source = make_video(tmp_path / "src.mp4", seconds=2, size="320x180")
+    rec = recorder.FileRecorder(source)
+    rec.start()
+    assert rec.stats()["kind"] == "file"
+    out = rec.slice(0.2, 1.2, tmp_path / "cut.mp4")
+    assert out.exists() and out.stat().st_size > 0
+    beyond = rec.slice(50, 52, tmp_path / "beyond.mp4")
+    assert beyond.exists()
+    rec.stop()
+
+    demo = recorder.DemoRecorder.__new__(recorder.DemoRecorder)
+    recorder.FileRecorder.__init__(demo, source, loop_seconds=30)
+    assert demo._loop_seconds == 30
+
+
+def test_recorder_base_contract():
+    base = recorder.Recorder()
+    base.start()
+    base.stop()
+    assert base.stats() == {}
+    with pytest.raises(NotImplementedError):
+        base.slice(0, 1, Path("x"))
+
+
+def test_clear(tmp_path):
+    directory = tmp_path / "gone"
+    directory.mkdir()
+    (directory / "f").write_text("x")
+    recorder.clear(directory)
+    assert not directory.exists()
+
+
+# ------------------------------------------------------------------ orchestrator
+
+
+def test_live_runner_captures_a_spike(monkeypatch, tmp_path):
+    monitor = make_monitor(auto_clip=True)
+    runner = LiveRunner(monitor)
+    fake_recorder = FakeRecorder()
+    monkeypatch.setattr("clipbait.live.orchestrator.build_recorder", lambda url, d: fake_recorder)
+    monkeypatch.setattr(
+        "clipbait.live.orchestrator.resolve_chat_source",
+        lambda url, provider, key: FakeChat(
+            [ChatMessage(t=5.2, author="a", text="CLIP IT")]
+        ),
+    )
+    spike = candidate()
+    runner.detector = FakeDetector(spike)
+    monkeypatch.setattr(runner, "elapsed", lambda: 1000.0)
+
+    submitted: list[dict] = []
+
+    def fake_submit(kind, fn, **kwargs):
+        submitted.append({"kind": kind, "fn": fn, **kwargs})
+        return {"id": "job_1"}
+
+    monkeypatch.setattr("clipbait.jobs.submit", fake_submit)
+
+    runner.start()
+    runner._thread.join(timeout=5)
+    for thread in runner._clip_threads:
+        thread.join(timeout=5)
+
+    assert fake_recorder.started == 1
+    assert fake_recorder.stopped >= 1
+    assert fake_recorder.slices and fake_recorder.slices[0][:2] == (5.0, 9.0)
+
+    monitor_row = db.get_monitor(monitor["id"])
+    assert monitor_row["status"] == "stopped"
+    moments = db.list_moments(monitor["id"])
+    assert len(moments) == 1
+    assert moments[0]["score"] == 4.2
+    assert moments[0]["signal"]["top_messages"] == ["CLIP IT"]
+
+    assert len(submitted) == 1
+    payload = submitted[0]["args"][1]
+    assert submitted[0]["kind"] == "live_clip"
+    assert submitted[0]["monitor_id"] == monitor["id"]
+    assert [message["text"] for message in payload["messages"]] == ["CLIP IT", "W"]
+    assert "velocity" in payload["reason"]
+    assert payload["score"] == 4.2
+
+    project = db.get_project(submitted[0]["project_id"])
+    assert project["source_kind"] == "live"
+    assert Path(storage.resolve(project["source_path"])).exists()
+
+    submitted[0]["on_done"]({}, {"clip_id": "clip_done"})
+    assert runner.clips == 1
+    assert db.list_moments(monitor["id"])[0]["clip_id"] == "clip_done"
+
+
+def test_live_runner_start_failure(monkeypatch):
+    monitor = make_monitor()
+
+    def boom(url, directory):
+        raise recorder.RecorderError("stream offline")
+
+    monkeypatch.setattr("clipbait.live.orchestrator.build_recorder", boom)
+    runner = LiveRunner(monitor)
+    runner.start()
+    runner._thread.join(timeout=5)
+
+    row = db.get_monitor(monitor["id"])
+    assert row["status"] == "failed"
+    assert "stream offline" in row["error"]
+
+
+def test_live_runner_survives_a_chat_crash(monkeypatch):
+    monitor = make_monitor()
+    fake_recorder = FakeRecorder()
+    monkeypatch.setattr("clipbait.live.orchestrator.build_recorder", lambda url, d: fake_recorder)
+    monkeypatch.setattr(
+        "clipbait.live.orchestrator.resolve_chat_source",
+        lambda url, provider, key: FakeChat([ChatMessage(t=1.0, text="hi")], error=RuntimeError("socket died")),
+    )
+    runner = LiveRunner(monitor)
+    monkeypatch.setattr(runner, "elapsed", lambda: 0.0)
+    runner.start()
+    runner._thread.join(timeout=5)
+
+    row = db.get_monitor(monitor["id"])
+    assert row["status"] == "failed"
+    assert "socket died" in row["error"]
+    assert fake_recorder.stopped == 1
+
+
+def test_live_runner_records_without_clipping(monkeypatch):
+    monitor = make_monitor(auto_clip=False)
+    runner = LiveRunner(monitor)
+    monkeypatch.setattr(
+        "clipbait.live.orchestrator.build_recorder", lambda url, d: FakeRecorder()
+    )
+    monkeypatch.setattr(
+        "clipbait.live.orchestrator.resolve_chat_source",
+        lambda url, provider, key: FakeChat([ChatMessage(t=5.2, text="CLIP IT")]),
+    )
+    runner.detector = FakeDetector(candidate())
+    monkeypatch.setattr(runner, "elapsed", lambda: 1000.0)
+    monkeypatch.setattr(
+        "clipbait.jobs.submit",
+        lambda *a, **k: pytest.fail("auto_clip is off: nothing should be queued"),
+    )
+
+    runner.start()
+    runner._thread.join(timeout=5)
+
+    assert len(db.list_moments(monitor["id"])) == 1
+    assert runner.stats()["messages"] == 1
+    assert runner.stats()["recorder"]["kind"] == "fake"
+
+
+def test_live_runner_respects_max_clips(monkeypatch):
+    monitor = make_monitor(max_clips=1)
+    runner = LiveRunner(monitor)
+    runner.clips = 1
+    monkeypatch.setattr(
+        "clipbait.live.orchestrator.build_recorder", lambda url, d: FakeRecorder()
+    )
+    monkeypatch.setattr(
+        "clipbait.live.orchestrator.resolve_chat_source",
+        lambda url, provider, key: FakeChat([ChatMessage(t=5.2, text="W")]),
+    )
+    runner.detector = FakeDetector(candidate())
+    monkeypatch.setattr(runner, "elapsed", lambda: 1000.0)
+    monkeypatch.setattr(
+        "clipbait.jobs.submit",
+        lambda *a, **k: pytest.fail("max_clips reached: nothing should be queued"),
+    )
+    runner.start()
+    runner._thread.join(timeout=5)
+    assert len(db.list_moments(monitor["id"])) == 1
+
+
+def test_live_runner_capture_failure_is_published(monkeypatch):
+    monitor = make_monitor()
+    runner = LiveRunner(monitor)
+
+    class BrokenRecorder(FakeRecorder):
+        def slice(self, start, end, out):
+            raise recorder.RecorderError("buffer gone")
+
+    monkeypatch.setattr(
+        "clipbait.live.orchestrator.build_recorder", lambda url, d: BrokenRecorder()
+    )
+    monkeypatch.setattr(
+        "clipbait.live.orchestrator.resolve_chat_source",
+        lambda url, provider, key: FakeChat([ChatMessage(t=5.2, text="W")]),
+    )
+    runner.detector = FakeDetector(candidate())
+    monkeypatch.setattr(runner, "elapsed", lambda: 1000.0)
+
+    events: list[dict] = []
+    monkeypatch.setattr(
+        "clipbait.live.orchestrator._publish", lambda mid, event: events.append(event)
+    )
+    runner.start()
+    runner._thread.join(timeout=5)
+    for thread in runner._clip_threads:
+        thread.join(timeout=5)
+
+    assert any(event["type"] == "capture_failed" for event in events)
+    assert any("buffer gone" in event.get("error", "") for event in events)
+
+
+class StubRunner:
+    instances: list[StubRunner] = []
+
+    def __init__(self, monitor: dict) -> None:
+        self.monitor = monitor
+        self.monitor_id = monitor["id"]
+        self.started = 0
+        self.stopped = 0
+        self._alive = True
+        StubRunner.instances.append(self)
+
+    def start(self) -> None:
+        self.started += 1
+
+    def stop(self) -> None:
+        self.stopped += 1
+        self._alive = False
+
+    def alive(self) -> bool:
+        return self._alive
+
+    def stats(self) -> dict:
+        return {"messages": 7, "clips": 0}
+
+
+@pytest.fixture()
+def stub_runners(monkeypatch):
+    StubRunner.instances = []
+    monkeypatch.setattr("clipbait.live.orchestrator.LiveRunner", StubRunner)
+    monkeypatch.setattr("clipbait.live.orchestrator._RUNNERS", {})
+    yield StubRunner
+    monkeypatch.setattr("clipbait.live.orchestrator._RUNNERS", {})
+
+
+def test_registry_lifecycle(stub_runners):
+    monitor = make_monitor()
+    first = live.start(monitor["id"])
+    assert first["id"] == monitor["id"]
+    assert len(stub_runners.instances) == 1
+    assert stub_runners.instances[0].started == 1
+
+    live.start(monitor["id"])  # already alive: no second runner
+    assert len(stub_runners.instances) == 1
+
+    assert live.status(monitor["id"]) == {"messages": 7, "clips": 0}
+    assert live.active_monitors() == [monitor["id"]]
+
+    stopped = live.stop(monitor["id"])
+    assert stopped["status"] == "stopped"
+    assert stub_runners.instances[0].stopped == 1
+    assert live.active_monitors() == []
+    # No live runner left: status falls back to the persisted row.
+    assert live.status(monitor["id"]) == {}
+
+    with pytest.raises(ValueError, match="unknown monitor"):
+        live.start("mon_missing")
+    with pytest.raises(ValueError, match="unknown monitor"):
+        live.stop("mon_missing")
+
+
+def test_registry_stop_all(stub_runners):
+    one = make_monitor()
+    two = make_monitor()
+    live.start(one["id"])
+    live.start(two["id"])
+    live.stop_all()
+    assert live.active_monitors() == []
+    assert all(runner.stopped == 1 for runner in stub_runners.instances)
+
+
+def test_status_uses_persisted_stats_when_not_alive(stub_runners, monkeypatch):
+    monitor = make_monitor()
+    live.start(monitor["id"])
+    runner = stub_runners.instances[0]
+    runner._alive = False
+    db.update_monitor(monitor["id"], stats={"messages": 3})
+    assert live.status(monitor["id"]) == {"messages": 3}
