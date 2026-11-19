@@ -1194,3 +1194,55 @@ def test_the_monitor_buffer_option_controls_what_ffmpeg_keeps(tmp_path) -> None:
     assert recorder.build_recorder(
         "https://www.youtube.com/watch?v=x", tmp_path, buffer_seconds=500
     ).buffer_seconds == 500
+
+
+def test_a_chat_reflex_cannot_swallow_the_on_stream_moment(monkeypatch):
+    """Chat can start the cooldown; on-stream evidence must still be kept."""
+    monitor = make_monitor(auto_clip=False)
+    runner = LiveRunner(monitor)
+    monkeypatch.setattr("clipbait.live.orchestrator._publish", lambda mid, event: None)
+
+    runner._on_candidate(candidate(), "chat", 9.0)  # reaction spam at t=9
+    content = MomentCandidate(
+        start=28.0,
+        end=60.0,
+        trigger_at=40.0,  # 31s later: past the 12s fuse, inside the 45s cooldown
+        score=3.9,
+        signal=SpikeSignal(
+            speech=4.4,
+            loudness=1.2,
+            quote="oh my god he actually did it",
+            reasons=["hype language"],
+            origin="speech",
+        ),
+        messages=[],
+    )
+    runner._on_candidate(content, "content", 40.0)
+
+    moments = db.list_moments(monitor["id"])
+    assert len(moments) == 1, "the real moment must merge, not vanish or duplicate"
+    signal = moments[0]["signal"]
+    assert signal["origin"] == "fused"
+    assert signal["speech"] == pytest.approx(4.4)
+    assert signal["quote"] == "oh my god he actually did it"
+    assert signal["rate"] > 0
+
+
+def test_chat_after_content_still_respects_the_cooldown(monkeypatch):
+    """The reverse order must not turn one moment into two clips."""
+    monitor = make_monitor(auto_clip=False)
+    runner = LiveRunner(monitor)
+    monkeypatch.setattr("clipbait.live.orchestrator._publish", lambda mid, event: None)
+
+    content = MomentCandidate(
+        start=0.0,
+        end=30.0,
+        trigger_at=12.0,
+        score=3.5,
+        signal=SpikeSignal(speech=3.5, quote="no way", origin="speech"),
+        messages=[],
+    )
+    runner._on_candidate(content, "content", 12.0)
+    runner._on_candidate(candidate(), "chat", 40.0)
+
+    assert len(db.list_moments(monitor["id"])) == 1

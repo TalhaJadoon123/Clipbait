@@ -277,6 +277,12 @@ class LiveRunner:
             self._fuse(candidate, origin)
             return
         if now - self._last_trigger_at < self.options.cooldown:
+            if self._last_origin == "chat" and origin == "content":
+                # Chat fired first and started the cooldown. Chat is the weaker
+                # signal — a reflex, not the moment — so dropping the on-stream
+                # evidence here loses exactly the clip worth posting. Absorb it
+                # into the open moment instead.
+                self._fuse(candidate, origin)
             return
 
         title, reason = self._label(candidate, origin)
