@@ -87,7 +87,7 @@ class Settings:
     render_concurrency: int = 1
     hw_encoder: str = "auto"
     cors_origins: tuple[str, ...] = ("*",)
-    live_buffer_seconds: int = 180
+    live_buffer_seconds: int = 420
     live_segment_seconds: int = 4
     live_default_provider: str = "auto"
     public_base_url: str = "http://localhost:8000"
@@ -169,7 +169,7 @@ def get_settings() -> Settings:
         render_concurrency=max(1, _env_int("CLIPBAIT_RENDER_CONCURRENCY", 1)),
         hw_encoder=_env("CLIPBAIT_HW_ENCODER", "auto") or "auto",
         cors_origins=origins,
-        live_buffer_seconds=max(60, _env_int("CLIPBAIT_LIVE_BUFFER_SECONDS", 180)),
+        live_buffer_seconds=max(60, _env_int("CLIPBAIT_LIVE_BUFFER_SECONDS", 420)),
         live_segment_seconds=max(2, _env_int("CLIPBAIT_LIVE_SEGMENT_SECONDS", 4)),
         live_default_provider=_env("CLIPBAIT_LIVE_CHAT_PROVIDER", "auto") or "auto",
         public_base_url=_env("CLIPBAIT_PUBLIC_BASE_URL", "http://localhost:8000") or "http://localhost:8000",

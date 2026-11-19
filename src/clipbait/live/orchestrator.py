@@ -126,7 +126,11 @@ class LiveRunner:
         api_key = os.getenv("YOUTUBE_API_KEY")
         try:
             db.update_monitor(self.monitor_id, status="starting")
-            self.recorder = build_recorder(self.url, storage.live_dir(self.monitor_id))
+            self.recorder = build_recorder(
+                self.url,
+                storage.live_dir(self.monitor_id),
+                buffer_seconds=self.options.buffer_seconds,
+            )
             self.recorder.start()
             # Adopt the recorder's own clock: it is stamped when ffmpeg starts
             # writing, not when URL resolution began. Chat is rebased onto it so

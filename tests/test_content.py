@@ -333,3 +333,53 @@ def test_trigger_clip_covers_the_whole_scored_window(tmp_path: Path) -> None:
     window_start = 60.0 - 2.0 - 32.0
     assert candidate.start == pytest.approx(window_start)
     assert candidate.end == pytest.approx(78.0)
+
+
+def test_speech_anchors_the_cut_on_the_scored_line(tmp_path: Path) -> None:
+    """A long quiet window must not bury the line that triggered the clip."""
+
+    class TwoLines:
+        name = "fixture"
+
+        def transcribe(self, audio: Path, language: str = "auto") -> Transcript:
+            return Transcript(
+                provider="fixture",
+                language="en",
+                duration=32.0,
+                segments=[
+                    TranscriptSegment(
+                        start=0.0,
+                        end=18.0,
+                        text="we are driving down the road and the radio is on",
+                    ),
+                    TranscriptSegment(
+                        start=18.0,
+                        end=22.0,
+                        text="no way holy shit insane lets go",
+                    ),
+                ],
+                words=[],
+            )
+
+    source = make_video(tmp_path / "stream.mp4", seconds=6)
+    watcher = ContentWatcher(
+        StubRecorder(source),
+        directory=tmp_path / "live",
+        window_seconds=32,
+        interval_seconds=8,
+        threshold=0.1,
+        pre_roll=25,
+        post_roll=20,
+        transcriber=TwoLines(),
+        allow_mock_speech=True,
+    )
+
+    candidate = watcher.step(now=60.0)
+
+    assert candidate is not None
+    window_start = 60.0 - 2.0 - 32.0
+    assert candidate.start == pytest.approx(window_start + 16.0)
+    assert candidate.trigger_at == pytest.approx(window_start + 22.0)
+    assert candidate.end == pytest.approx(window_start + 42.0)
+    assert "no way" in candidate.signal.quote.lower()
+    assert candidate.signal.origin == "speech"

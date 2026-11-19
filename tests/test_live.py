@@ -596,6 +596,7 @@ def test_hls_watch_and_prune(monkeypatch, tmp_path):
 
     settings = dataclasses.replace(get_settings(), live_buffer_seconds=2)
     monkeypatch.setattr(recorder, "get_settings", lambda: settings)
+    rec.buffer_seconds = 2  # the monitor option, not the process default
     rec._prune()
     assert [segment.path.name for segment in rec._segments] == ["seg_000001.ts"]
     assert not (tmp_path / "seg_000000.ts").exists()
@@ -719,7 +720,7 @@ def test_live_runner_captures_a_spike(monkeypatch, tmp_path):
     monitor = make_monitor(auto_clip=True)
     runner = LiveRunner(monitor)
     fake_recorder = FakeRecorder()
-    monkeypatch.setattr("clipbait.live.orchestrator.build_recorder", lambda url, d: fake_recorder)
+    monkeypatch.setattr("clipbait.live.orchestrator.build_recorder", lambda url, d, **kw: fake_recorder)
     monkeypatch.setattr(
         "clipbait.live.orchestrator.resolve_chat_source",
         lambda url, provider, key: FakeChat(
@@ -774,7 +775,7 @@ def test_live_runner_captures_a_spike(monkeypatch, tmp_path):
 def test_live_runner_start_failure(monkeypatch):
     monitor = make_monitor()
 
-    def boom(url, directory):
+    def boom(url, directory, **kw):
         raise recorder.RecorderError("stream offline")
 
     monkeypatch.setattr("clipbait.live.orchestrator.build_recorder", boom)
@@ -790,7 +791,7 @@ def test_live_runner_start_failure(monkeypatch):
 def test_live_runner_survives_a_chat_crash(monkeypatch):
     monitor = make_monitor()
     fake_recorder = FakeRecorder()
-    monkeypatch.setattr("clipbait.live.orchestrator.build_recorder", lambda url, d: fake_recorder)
+    monkeypatch.setattr("clipbait.live.orchestrator.build_recorder", lambda url, d, **kw: fake_recorder)
     monkeypatch.setattr(
         "clipbait.live.orchestrator.resolve_chat_source",
         lambda url, provider, key: FakeChat([ChatMessage(t=1.0, text="hi")], error=RuntimeError("socket died")),
@@ -810,7 +811,7 @@ def test_live_runner_records_without_clipping(monkeypatch):
     monitor = make_monitor(auto_clip=False)
     runner = LiveRunner(monitor)
     monkeypatch.setattr(
-        "clipbait.live.orchestrator.build_recorder", lambda url, d: FakeRecorder()
+        "clipbait.live.orchestrator.build_recorder", lambda url, d, **kw: FakeRecorder()
     )
     monkeypatch.setattr(
         "clipbait.live.orchestrator.resolve_chat_source",
@@ -836,7 +837,7 @@ def test_live_runner_respects_max_clips(monkeypatch):
     runner = LiveRunner(monitor)
     runner.clips = 1
     monkeypatch.setattr(
-        "clipbait.live.orchestrator.build_recorder", lambda url, d: FakeRecorder()
+        "clipbait.live.orchestrator.build_recorder", lambda url, d, **kw: FakeRecorder()
     )
     monkeypatch.setattr(
         "clipbait.live.orchestrator.resolve_chat_source",
@@ -862,7 +863,7 @@ def test_live_runner_capture_failure_is_published(monkeypatch):
             raise recorder.RecorderError("buffer gone")
 
     monkeypatch.setattr(
-        "clipbait.live.orchestrator.build_recorder", lambda url, d: BrokenRecorder()
+        "clipbait.live.orchestrator.build_recorder", lambda url, d, **kw: BrokenRecorder()
     )
     monkeypatch.setattr(
         "clipbait.live.orchestrator.resolve_chat_source",
@@ -898,7 +899,7 @@ def test_live_runner_unexpected_capture_error_is_published(monkeypatch):
             raise RuntimeError("ffmpeg segfaulted")
 
     monkeypatch.setattr(
-        "clipbait.live.orchestrator.build_recorder", lambda url, d: BrokenRecorder()
+        "clipbait.live.orchestrator.build_recorder", lambda url, d, **kw: BrokenRecorder()
     )
     monkeypatch.setattr(
         "clipbait.live.orchestrator.resolve_chat_source",
@@ -1182,3 +1183,14 @@ def test_content_candidate_pulls_chat_evidence_from_the_detector(monkeypatch):
 
     moment = db.list_moments(monitor["id"])[0]
     assert [message["text"] for message in moment["messages"]] == ["inside"]
+
+
+def test_the_monitor_buffer_option_controls_what_ffmpeg_keeps(tmp_path) -> None:
+    """Content analysis can finish minutes late; the ring must outlast it."""
+    rec = recorder.HlsRecorder(
+        "https://www.youtube.com/watch?v=x", tmp_path, buffer_seconds=600
+    )
+    assert rec.buffer_seconds == 600
+    assert recorder.build_recorder(
+        "https://www.youtube.com/watch?v=x", tmp_path, buffer_seconds=500
+    ).buffer_seconds == 500

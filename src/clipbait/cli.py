@@ -192,6 +192,8 @@ def cmd_live(args: argparse.Namespace) -> int:
         platform=args.platform,
         content_detection=not args.no_content,
         content_threshold=args.content_threshold,
+        max_clips=args.max_clips,
+        buffer_seconds=args.buffer_seconds,
     )
     monitor = db.create_monitor(
         {
@@ -338,6 +340,8 @@ def cmd_streams(args: argparse.Namespace) -> int:
                 no_chat_overlay=False,
                 no_content=False,
                 content_threshold=args.content_threshold,
+                max_clips=4,
+                buffer_seconds=420,
             )
         )
     return 0
@@ -450,6 +454,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=2.5,
         help="on-stream signal threshold (0.5-12, lower = more clips)",
+    )
+    live_cmd.add_argument(
+        "--max-clips", type=int, default=8, help="stop clipping after this many moments"
+    )
+    live_cmd.add_argument(
+        "--buffer-seconds",
+        type=int,
+        default=420,
+        help="footage kept on disk; must outlast content analysis",
     )
     live_cmd.set_defaults(func=cmd_live)
 

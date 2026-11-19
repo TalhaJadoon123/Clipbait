@@ -175,6 +175,8 @@ def live_args(source: str = "demo", **overrides) -> argparse.Namespace:
         "no_chat_overlay": False,
         "no_content": False,
         "content_threshold": 2.5,
+        "max_clips": 8,
+        "buffer_seconds": 420,
     }
     data.update(overrides)
     return argparse.Namespace(**data)
@@ -341,6 +343,8 @@ def test_live_content_flags_reach_the_monitor_options(monkeypatch, tmp_path):
         no_chat_overlay=False,
         no_content=True,
         content_threshold=4.5,
+        max_clips=8,
+        buffer_seconds=420,
     )
     assert cli.cmd_live(args) == 0
     options = started[0]["options"]

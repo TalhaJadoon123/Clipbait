@@ -159,8 +159,11 @@ clipbait live "https://www.youtube.com/watch?v=..." --no-content
 
 `live/recorder.py` runs ffmpeg with `-c copy -f segment` into 4-second MPEG-TS
 files, keeping a CSV segment list. A watcher thread ingests new rows, records
-each segment's cumulative start time, and prunes anything older than
-`CLIPBAIT_LIVE_BUFFER_SECONDS` (default 180 s).
+each segment's cumulative start time, and prunes anything older than the
+monitor's `buffer_seconds` (default 420 s, env fallback
+`CLIPBAIT_LIVE_BUFFER_SECONDS`). The ring has to outlast content analysis: a
+32 s window with scene detection and whisper can finish minutes after the audio
+it scored, and a 180 s ring turns that normal lag into a skipped clip.
 
 When a moment is captured:
 
@@ -323,7 +326,7 @@ outlier.
 
 ## Operational notes
 
-* **Disk** — a 180 s ring at 720p is roughly 60–150 MB per monitor. Moments and
+* **Disk** — a 420 s ring at 720p is roughly 150–350 MB per monitor. Moments and
   rendered clips add more. `DELETE /projects/{id}` removes a project's files.
 * **CPU** — capture is stream-copy (cheap); slicing and rendering are not.
   Concurrent monitors multiply render load. Raise

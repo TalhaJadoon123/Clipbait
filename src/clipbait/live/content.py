@@ -27,7 +27,7 @@ import math
 import re
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .. import media
@@ -99,6 +99,10 @@ class SpeechScore:
     score: float
     reasons: tuple[str, ...] = ()
     signals: tuple[str, ...] = ()
+    # Seconds from the start of the analysed window to the beginning of the
+    # strongest sentence. None when the score covers the whole window, so the
+    # caller keeps the conservative pre-roll.
+    anchor: float | None = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +141,7 @@ class ContentWindow:
     origin: str = "content"
     reasons: list[str] = field(default_factory=list)
     trigger_offset: float = 0.0
+    anchor: float | None = None
 
 
 # --------------------------------------------------------------------- speech
@@ -348,6 +353,7 @@ def fuse_window(
     action: ActionStats,
     quote: str = "",
     speech_offset: float | None = None,
+    speech_anchor: float | None = None,
     audio_offset: float | None = None,
     action_offset: float | None = None,
 ) -> ContentWindow:
@@ -387,6 +393,7 @@ def fuse_window(
         origin=origin if score > 0 else "content",
         reasons=reasons,
         trigger_offset=trigger_offset,
+        anchor=speech_anchor if origin == "speech" else None,
     )
 
 
@@ -491,11 +498,15 @@ class ContentWatcher:
         self._last_trigger = trigger
         self.triggers += 1
 
-        # Everything the scorer heard must be inside the cut. The analysis
-        # window can be longer than the pre-roll (32s vs 25s), so anchoring only
-        # on the trigger drops the opening seconds — exactly where the scored
-        # line often starts.
-        clip_start = min(trigger - self.pre_roll, start)
+        if window.anchor is not None:
+            # Speech: start two seconds before the sentence the detector actually
+            # scored. The clip is then ~line + post-roll long and opens on the
+            # line instead of on half a minute of driving.
+            clip_start = max(start, start + window.anchor - 2.0)
+        else:
+            # Chat/audio/action: the trigger is a single beat, so keep the full
+            # pre-roll to give the moment room to happen.
+            clip_start = min(trigger - self.pre_roll, start)
         return MomentCandidate(
             start=round(max(0.0, clip_start), 2),
             end=round(trigger + self.post_roll, 2),
@@ -562,6 +573,7 @@ class ContentWatcher:
                     action=action,
                     quote=quote,
                     speech_offset=speech_offset,
+                    speech_anchor=speech.anchor,
                     audio_offset=audio_stats.peak_second,
                     action_offset=action.peak_second,
                 )
@@ -590,18 +602,21 @@ class ContentWatcher:
             length = max(1.0, float((segment.end or 0.0) - (segment.start or 0.0)))
             scored = score_speech(segment.text, length)
             if best is None or scored.score > best[0].score:
-                best = (scored, relative + length)
+                best = (scored, relative + length, relative)
 
         full_text = " ".join(segment.text for segment in transcript.segments or []).strip()
         if best is None or not full_text:
             return score_speech(full_text, duration), duration
 
-        # Score the whole window for evidence, but anchor the trigger on the
-        # strongest sentence so a quiet 20s intro cannot dilute a loud 4s line.
+        # Score the whole window for evidence, but quote the strongest sentence
+        # and remember where it starts. A 32s window can hold four sentences:
+        # cutting from the window start buries the line behind 25s of setup.
+        best_score, best_end, best_start = best
         overall = score_speech(full_text, duration)
-        if overall.score >= best[0].score:
+        if overall.score >= best_score.score * 1.25:
+            # The build-up genuinely carries the moment; keep the wide window.
             return overall, duration
-        return best[0], best[1]
+        return replace(best_score, anchor=best_start), best_end
 
     def _quote(self, speech: SpeechScore) -> str:
         text = re.sub(r"\s+", " ", speech.text or "").strip()

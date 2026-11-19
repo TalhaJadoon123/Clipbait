@@ -138,10 +138,18 @@ class HlsRecorder(Recorder):
         segment_seconds: int = 4,
         *,
         origin: float | None = None,
+        buffer_seconds: int | None = None,
     ) -> None:
         self.url = url
         self.directory = directory
         self.segment_seconds = segment_seconds
+        # How much footage stays on disk. Content analysis (scene detect +
+        # whisper) can finish minutes after the window it scored, so a small
+        # ring silently turns every late trigger into a skipped clip. The
+        # monitor option wins; the setting is the fallback.
+        self.buffer_seconds = int(
+            buffer_seconds or get_settings().live_buffer_seconds
+        )
         # ``origin`` is the monitor clock (time.monotonic) the runner started at.
         # Segment timestamps are rebased onto it so chat times and video times
         # agree even though resolving a live URL takes 20-40 seconds.
@@ -251,7 +259,7 @@ class HlsRecorder(Recorder):
             pass
 
     def _prune(self) -> None:
-        keep = get_settings().live_buffer_seconds
+        keep = self.buffer_seconds
         if not self._segments:
             return
         newest = self._segments[-1].end
@@ -400,11 +408,17 @@ class FileRecorder(Recorder):
         }
 
 
-def build_recorder(url: str, directory: Path, *, origin: float | None = None) -> Recorder:
+def build_recorder(
+    url: str,
+    directory: Path,
+    *,
+    origin: float | None = None,
+    buffer_seconds: int | None = None,
+) -> Recorder:
     if url.startswith("demo://") or url == "demo":
         return DemoRecorder(directory)
     if "twitch.tv" in url or "youtube.com" in url or "youtu.be" in url:
-        return HlsRecorder(url, directory, origin=origin)
+        return HlsRecorder(url, directory, origin=origin, buffer_seconds=buffer_seconds)
     raise RecorderError("unsupported live URL; use YouTube, Twitch or demo://live")
 
 

@@ -215,7 +215,7 @@ class MonitorOptions(BaseModel):
     chat_overlay: bool = True
     caption_preset: CaptionPreset = "default"
     reframe_mode: ReframeMode = "auto"
-    buffer_seconds: int = Field(default=180, ge=60, le=900)
+    buffer_seconds: int = Field(default=420, ge=60, le=900)
     pre_roll: int = Field(default=25, ge=5, le=120)
     post_roll: int = Field(default=20, ge=5, le=120)
     cooldown: int = Field(default=45, ge=10, le=600)
