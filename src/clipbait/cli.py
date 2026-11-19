@@ -187,6 +187,8 @@ def cmd_live(args: argparse.Namespace) -> int:
         caption_preset=args.preset,
         region=args.region,
         platform=args.platform,
+        content_detection=not args.no_content,
+        content_threshold=args.content_threshold,
     )
     monitor = db.create_monitor(
         {
@@ -200,6 +202,10 @@ def cmd_live(args: argparse.Namespace) -> int:
     live.start(monitor["id"])
     print(f"Monitoring {url}")
     print(f"  id: {monitor['id']}   threshold: {options.spike_threshold}σ")
+    if options.content_detection:
+        print(
+            f"  content detection on (speech/audio/action, threshold {options.content_threshold})"
+        )
     print("  Ctrl-C to stop.\n")
     import time
 
@@ -210,10 +216,14 @@ def cmd_live(args: argparse.Namespace) -> int:
                 if moment["id"] in seen:
                     continue
                 seen.add(moment["id"])
-                top = (moment.get("signal") or {}).get("top_messages") or ["chat went wild"]
+                signal = moment.get("signal") or {}
+                top = signal.get("top_messages") or []
+                label = signal.get("quote") or (top[0] if top else "chat went wild")
+                origin = signal.get("origin") or "chat"
+                kind = "spike" if origin == "chat" else "content"
                 print(
-                    f"  spike {moment['start']:7.1f}s  score={moment['score']:.2f}  "
-                    f"\"{top[0][:60]}\""
+                    f"  {kind:7s} {moment['start']:7.1f}s  score={moment['score']:.2f}  "
+                    f"\"{str(label)[:60]}\""
                 )
             time.sleep(2)
     except KeyboardInterrupt:
@@ -225,6 +235,54 @@ def cmd_live(args: argparse.Namespace) -> int:
             pass
     clips = db.list_jobs(monitor_id=monitor["id"])
     print(f"Monitored for {int(time.monotonic())}s · {len(seen)} spike(s) · {len(clips)} job(s)")
+    return 0
+
+
+# ---------------------------------------------------------------------- queue
+
+
+def cmd_queue(args: argparse.Namespace) -> int:
+    from .money import build_queue, export_bundle, mark_uploaded
+
+    settings = get_settings()
+    settings.ensure_dirs()
+    db.init_db()
+
+    if args.mark:
+        updated = mark_uploaded(args.mark, url=args.url, platform=args.platform)
+        if not updated:
+            print(f"clip not found: {args.mark}")
+            return 1
+        print(f"marked {args.mark} uploaded" + (f" -> {args.url}" if args.url else ""))
+        return 0
+
+    queue = build_queue(
+        limit=args.limit, min_score=args.min_score, include_posted=args.include_posted
+    )
+    if args.json:
+        print(json.dumps(queue.as_dict(), indent=2))
+    else:
+        print(
+            f"{queue.count} ready clip(s) · ${queue.total_expected_usd:.2f} expected "
+            f"(range is per clip)"
+        )
+        if not queue.items:
+            print("  nothing ready. render a clip first: clipbait process <url>")
+        for index, item in enumerate(queue.items, start=1):
+            print(
+                f"  {index:2d}. ${item.expected_usd:7.2f}  "
+                f"(${item.usd_low:.2f}-${item.usd_high:.2f})  "
+                f"{item.platform:8s} {item.score:3d}  {item.duration:4.0f}s  {item.title[:58]}"
+            )
+
+    if args.export:
+        for item in queue.items:
+            try:
+                bundle = export_bundle(item.clip_id)
+            except FileNotFoundError as exc:
+                print(f"  skip {item.clip_id}: {exc}")
+                continue
+            print(f"  exported {bundle['slug']} -> {bundle['dir']}")
     return 0
 
 
@@ -277,7 +335,29 @@ def build_parser() -> argparse.ArgumentParser:
     live_cmd.add_argument("--no-clip", action="store_true", help="detect only, do not render")
     live_cmd.add_argument("--no-captions", action="store_true")
     live_cmd.add_argument("--no-chat-overlay", action="store_true")
+    live_cmd.add_argument(
+        "--no-content",
+        action="store_true",
+        help="chat only; skip speech/audio/action detection on the stream itself",
+    )
+    live_cmd.add_argument(
+        "--content-threshold",
+        type=float,
+        default=2.5,
+        help="on-stream signal threshold (0.5-12, lower = more clips)",
+    )
     live_cmd.set_defaults(func=cmd_live)
+
+    queue_cmd = sub.add_parser("queue", help="rank ready clips by expected revenue")
+    queue_cmd.add_argument("--limit", type=int, default=20)
+    queue_cmd.add_argument("--min-score", type=float, default=0.0)
+    queue_cmd.add_argument("--include-posted", action="store_true")
+    queue_cmd.add_argument("--json", action="store_true")
+    queue_cmd.add_argument("--export", action="store_true", help="write upload bundles")
+    queue_cmd.add_argument("--mark", metavar="CLIP_ID", help="mark one clip uploaded")
+    queue_cmd.add_argument("--url", help="posted URL for --mark")
+    queue_cmd.add_argument("--platform", help="platform for --mark")
+    queue_cmd.set_defaults(func=cmd_queue)
 
     doctor = sub.add_parser("doctor", help="report installed capabilities")
     doctor.set_defaults(func=cmd_doctor)

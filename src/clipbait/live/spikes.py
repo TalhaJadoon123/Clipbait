@@ -253,3 +253,7 @@ class SpikeDetector:
         if not self._current:
             return 0.0
         return round(self._current.count / max(0.1, self.config.bucket_seconds), 2)
+
+    def messages_between(self, start: float, end: float, limit: int = 40) -> list[ChatMessage]:
+        """Recent chat inside ``[start, end]``, for overlaying a content clip."""
+        return [m for m in self._message_log if start <= m.t <= end][-limit:]

@@ -157,6 +157,13 @@ export interface Moment {
     repeats: number;
     sentiment: number;
     top_messages: string[];
+    speech?: number;
+    loudness?: number;
+    action?: number;
+    quote?: string;
+    reasons?: string[];
+    origin?: "chat" | "speech" | "audio" | "action" | "fused" | string;
+    capture_error?: string;
   };
   messages: ChatMessage[];
   clip_id: string | null;
@@ -180,6 +187,10 @@ export interface Monitor {
     platform: string;
     chat_overlay: boolean;
     caption_preset: string;
+    content_detection?: boolean;
+    content_threshold?: number;
+    content_interval?: number;
+    speech_window?: number;
   };
   started_at: string | null;
   stopped_at: string | null;
@@ -198,7 +209,85 @@ export interface MonitorStats {
   elapsed?: number;
   clips?: number;
   chat_provider?: string;
-  recorder?: { kind: string; segments?: number; buffered_seconds?: number };
+  content_triggers?: number;
+  recorder?: {
+    kind: string;
+    segments?: number;
+    buffered_seconds?: number;
+    available_from?: number;
+    available_until?: number;
+  };
+  content?: {
+    speech: boolean;
+    windows: number;
+    triggers: number;
+    interval: number;
+    window: number;
+  };
+}
+
+export interface PayoutEstimate {
+  platform: string;
+  region: string;
+  expected_views: number;
+  views_low: number;
+  views_high: number;
+  rpm: number;
+  region_factor: number;
+  expected_usd: number;
+  usd_low: number;
+  usd_high: number;
+  confidence: "low" | "medium" | string;
+  assumptions: string[];
+}
+
+export interface PayoutReport {
+  region: string;
+  score: number;
+  duration: number;
+  best: PayoutEstimate | null;
+  estimates: PayoutEstimate[];
+  rationale: string[];
+  disclaimer: string;
+}
+
+export interface QueueItem {
+  clip_id: string;
+  project_id: string;
+  project_title: string;
+  title: string;
+  hook: string;
+  description: string;
+  hashtags: string[];
+  quote: string;
+  region: string;
+  source_platform: string;
+  platform: string;
+  duration: number;
+  score: number;
+  expected_usd: number;
+  usd_low: number;
+  usd_high: number;
+  expected_views: number;
+  views_low: number;
+  views_high: number;
+  rpm: number;
+  confidence: string;
+  posted: boolean;
+  posted_url: string;
+  best_time: string;
+  reasons: string[];
+  payout: PayoutReport | null;
+  copy: { title: string; caption: string; hashtags: string };
+  created_at: string;
+}
+
+export interface MoneyQueue {
+  generated_at: string;
+  count: number;
+  total_expected_usd: number;
+  posted_count: number;
+  items: QueueItem[];
 }
 
 export interface Region {
@@ -244,6 +333,11 @@ export interface Meta {
   platforms: string[];
   memes: Meme[];
   live_providers: string[];
+  content_detection?: { signals: string[]; default_threshold: number; fuse_window: number };
+  money?: {
+    platforms: Record<string, { rpm_low: number; rpm: number; rpm_high: number }>;
+    note: string;
+  };
   prompt_version: string;
   data_dir: string;
 }

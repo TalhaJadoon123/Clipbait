@@ -27,6 +27,13 @@ def live_dir(monitor_id: str) -> Path:
     return path
 
 
+def exports_dir() -> Path:
+    """Where upload-ready bundles are staged. Outside project dirs on purpose."""
+    path = get_settings().data_dir / "exports"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def safe_filename(name: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-")
     return cleaned[:120] or "file"

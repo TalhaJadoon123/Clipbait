@@ -1,17 +1,22 @@
 # Live clipping
 
-Most clippers are VOD tools with a live URL bolted on. Clipbait treats live
-chat as the highlight signal: a stream's audience tells you where the moment is,
-in real time, and it does it for free.
+Most clippers are VOD tools with a live URL bolted on. Clipbait watches two
+things at once: the **chat**, which tells you where the audience is losing it,
+and the **stream itself** — what the streamer says, screams or does. Chat lags;
+the moment is already happening on camera.
 
 ```
-stream ──▶ rolling recorder ─────────────────────────────┐
-              (last N minutes of .ts segments)           │
-chat ──▶ spike detector ──▶ moment ──▶ capture thread ───┴─▶ slice.mp4
-                                                             │
-                                              transcribe ──▶ reframe ──▶
-                                              captions   ──▶ packaging ─▶ clip
+stream ──▶ rolling recorder ──────────────────────────────┐
+              │   (last N minutes of .ts segments)         │
+              ├──▶ content watcher ──┐                     │
+chat ──▶ spike detector ─────────────┴─▶ moment ──▶ capture ┴─▶ slice.mp4
+                                                            │
+                                             transcribe ──▶ reframe ──▶
+                                             captions   ──▶ packaging ─▶ clip
 ```
+
+Two detectors can fire for the same beat. They are fused into one moment and one
+clip, with the evidence from both.
 
 ---
 
@@ -85,6 +90,71 @@ monitor renders as the spike feed.
 
 ---
 
+## Watching the stream, not just chat
+
+`live/content.py` analyses the newest slice of the ring buffer every
+`content_interval` seconds and scores three independent signals:
+
+| Signal | What it measures | Examples |
+|---|---|---|
+| `speech` | the transcribed window: hype phrases, exclamation marks, ALL CAPS, fast delivery, repetition, profanity, laughter | "NO WAY!", "I can't believe it", a shouted sentence |
+| `audio` | peak loudness against the window's **own** baseline (dB jump) | a scream, a hit, an explosion, a mic drop |
+| `action` | hard scene changes per second, scored on the densest 4-second burst | standing up, jumping, throwing something, a camera cut |
+
+```
+score = 0.62·speech + 0.55·audio + 0.45·action
+```
+
+The weights are close on purpose. A scream with no words, a wild sentence with
+no movement and a silent action beat are each valid clips; correlation only
+raises the score. Every trigger stores its reasons (`"hype language: no way"`,
+`"loudness spike (+19 dB over the window)"`, `"5 cuts in 4s (motion burst)"`),
+which is what the UI and the clip copy show.
+
+### Speech is skipped when it would be fake
+
+If the resolved transcriber is `mock` (no whisper, no API key), speech scoring
+is disabled rather than inventing a viral line from a placeholder transcript.
+Audio and action still run, so a keyless box still catches screams and visual
+moments. The monitor stats expose this as `content.speech`.
+
+### Fusion
+
+Chat and content triggers within **12 seconds** of each other are the same beat:
+
+* one moment, one clip — the start is extended to cover both windows,
+* evidence is merged (chat z-score + speech/audio/action scores + the best
+  messages from both),
+* the score gets a small bonus for agreement,
+* the moment's `origin` becomes `fused`, otherwise `chat`, `speech`, `audio` or
+  `action`.
+
+Distinct moments still respect the normal `cooldown` (45s by default), so a
+wild two-minute segment is not cut twelve times.
+
+### Options
+
+| Option | Default | Meaning |
+|---|---|---|
+| `content_detection` | `true` | watch the stream, not only chat |
+| `content_threshold` | `2.5` | score needed to trigger (lower = more clips) |
+| `content_interval` | `18` | seconds between analysed windows |
+| `speech_window` | `32` | seconds of buffer transcribed per analysis |
+
+Analysing a 32-second window every 18 seconds costs one transcription call per
+window. With `faster-whisper` on CPU that is a few seconds, which is why the
+interval is not shorter.
+
+```bash
+# chat + speech + audio + action (default)
+clipbait live "https://www.youtube.com/watch?v=..." --content-threshold 2.5
+
+# chat only
+clipbait live "https://www.youtube.com/watch?v=..." --no-content
+```
+
+---
+
 ## Rolling recorder
 
 `live/recorder.py` runs ffmpeg with `-c copy -f segment` into 4-second MPEG-TS
@@ -117,18 +187,34 @@ at different times. Resolving a stream URL can take 30 seconds; meanwhile the
 chat connector has already been reading messages. If you stamp chat with
 "seconds since the monitor began", every clip is late by that gap.
 
-Clipbait uses one clock:
+Clipbait uses one clock, and the recorder owns it:
 
 ```python
-self.started_at = time.monotonic()
-self.recorder.start()
+self.recorder = build_recorder(self.url, storage.live_dir(self.monitor_id))
+self.recorder.start()                      # resolves, then launches ffmpeg
+self.started_at = self.recorder.started_at  # stamped when ffmpeg starts
 self.chat = resolve_chat_source(...)
 self._chat_offset = max(0.0, self.chat.started - self.started_at)
 ```
 
-Each message is rebased by `_chat_offset` before it reaches the detector, so
-chat time and video time agree. The clock is reset at start, which also means a
-restarted monitor does not inherit stale elapsed time.
+`Recorder.started_at` is set the moment media capture begins, and HLS segments
+are rebased onto it, so segment timestamps, chat time and content windows agree.
+A restarted monitor gets a fresh clock and does not inherit stale elapsed time.
+
+### Ring-buffer misses
+
+A monitor cannot clip footage it never recorded. Chat can spike before the
+first HLS segment exists, and the newest segment is still filling when a moment
+ends. `LiveRunner._capture` handles both:
+
+- clamp `start` up to `available_from` and `end` down to `available_until`
+- wait up to 90s for the tail of the buffer to reach `end`
+- skip cleanly when fewer than 4s of the moment survive, recording the reason
+  in `moments.signal.capture_error` and publishing `capture_skipped`
+- never log a stack trace for an ordinary buffer miss
+
+That is the difference between a monitor that dies on the first early spike and
+one that keeps recording until a moment it can actually cut.
 
 ---
 
@@ -180,7 +266,9 @@ product without going live.
 
 **Live → New monitor**: paste a YouTube/Twitch URL, choose threshold, pre/post
 roll, region, platform, caption preset, chat overlay. The detail page streams
-`stats` and `spike` events over SSE and shows clips as they finish.
+`stats`, `spike`, `content` and `spike_fused` events over SSE, shows the content
+signals (speech / loudness / action) for each moment, and lists clips as they
+finish.
 
 ### CLI
 
@@ -191,6 +279,8 @@ clipbait live "https://www.twitch.tv/somechannel" \
 
 `Ctrl-C` stops the monitor and the recorder. `--no-clip` keeps detection on but
 skips rendering (useful to tune a threshold without burning CPU).
+`--no-content` disables on-stream detection; `--content-threshold` tunes it
+independently of the chat threshold.
 
 ### API
 
@@ -219,7 +309,11 @@ Start with the defaults, then adjust one variable at a time:
 | Clips start too late | increase `pre_roll` (25 → 35) |
 | Clips cut off the payoff | increase `post_roll` (20 → 30) |
 | Same moment clipped repeatedly | increase `cooldown` (45 → 90) |
-| Chat is slow but the moment is visual | use a lower threshold and rely on `minimum_rate` |
+| Chat is slow but the moment is visual | content detection already covers it; lower `content_threshold` |
+| Too many clips from normal speech | raise `content_threshold` (2.5 → 3.5) |
+| Missing a viral line before chat reacts | lower `content_threshold`, keep `speech_window` ≥ 24 |
+| Rendering lags behind a busy stream | raise `content_interval` (18 → 30) |
+| Speech detection never fires | `content.speech` is false: install faster-whisper or add an API key |
 | Buffer overrun / no segments found | raise `CLIPBAIT_LIVE_BUFFER_SECONDS` |
 | Disk filling up | lower buffer seconds and prune old projects |
 

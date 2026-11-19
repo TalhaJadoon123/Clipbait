@@ -70,11 +70,12 @@ Choices and why:
 | `reframe/` | Face sampling, crop path, layout plan | `plan_reframe` |
 | `captions/` | Presets + ASS document builder | `build_captions`, `write_ass` |
 | `render/` | ffmpeg filter graph + progress parsing | `render_clip` |
-| `live/` | Chat sources, spike detector, recorder, runner | `start`, `stop`, `spike`, `recorder` |
-| `virality/` | Region profiles, meme formats, variants, forecast | `build_variants`, `forecast` |
+| `live/` | Chat sources, spike detector, recorder, on-stream content watcher, runner | `start`, `stop`, `spike`, `recorder`, `ContentWatcher` |
+| `virality/` | Region profiles, meme formats, variants, forecast, payout math | `build_variants`, `forecast`, `estimate` |
+| `money/` | Revenue-ranked queue, upload bundles, posted state | `build_queue`, `export_bundle`, `mark_uploaded` |
 | `memes/` | Meme **video** inserts: planner, providers, asset prep | `plan_inserts`, `prepare_insert` |
 | `api/app.py` | HTTP surface, SSE, SPA mount | `app`, `create_app` |
-| `cli.py` | `serve` / `process` / `live` / `doctor` | `main` |
+| `cli.py` | `serve` / `process` / `live` / `queue` / `doctor` | `main` |
 
 Rule of thumb: **only `pipeline.py` composes modules.** API handlers validate
 input, write a row and submit a job; CLI commands build options and call the
@@ -187,7 +188,9 @@ monitors ──1:N── moments
   live/<mon_id>/
     seg_000001.ts ...        # rolling ring
     <mom_id>.mp4             # captured moment
+    analysis/                # transient content-detection windows
     demo_source.mp4          # demo mode cache
+  exports/<slug>/            # upload bundles (clip.mp4, caption, metadata)
   models/                    # Whisper cache
 ```
 
@@ -219,6 +222,9 @@ POST   /clips/{id}/render
 POST   /clips/{id}/variants/{variant_id}
 GET    /clips/{id}/video
 GET    /clips/{id}/thumb
+POST   /clips/{id}/uploaded     {url?, platform?}
+POST   /clips/{id}/export       upload-ready bundle
+GET    /queue                   ranked ready clips
 GET    /live/monitors
 POST   /live/monitors           {url, title?, options}
 POST   /live/monitors/{id}/start|stop

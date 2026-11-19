@@ -366,8 +366,46 @@ def test_process_live_moment(transcript, monkeypatch, tmp_path):
     assert clip["meta"]["live"] is True
     assert clip["meta"]["monitor_id"] == "mon_1"
     assert clip["meta"]["chat"][0]["text"] == "CLIP IT"
+    assert clip["meta"]["analysis"] == "live-chat-spike"
     assert clip["score"] == 84
     assert db.get_project(project["id"])["status"] == "completed"
+
+
+def test_process_live_moment_uses_what_the_streamer_said(transcript, monkeypatch):
+    project = make_project(None, chat_overlay=True, clips=1)
+    moment_dir = storage.project_dir(project["id"]) / "source"
+    moment_dir.mkdir(parents=True, exist_ok=True)
+    capture = make_video(moment_dir / "moment.mp4", seconds=4, size="320x180")
+    db.update("projects", project["id"], {"source_path": storage.relative(capture)})
+
+    fixed_transcriber(monkeypatch, transcript)
+    captured: dict = {}
+
+    def fake_render(clip_id, *, transcript=None, on_progress=None):
+        captured["clip"] = db.get_clip(clip_id)
+        return captured["clip"]
+
+    monkeypatch.setattr(pipeline, "render_clip_record", fake_render)
+
+    pipeline.process_live_moment(
+        project["id"],
+        {
+            "monitor_id": "mon_2",
+            "moment_id": "mom_2",
+            "title": 'On stream: "NO WAY"',
+            "reason": "hype language: no way; loudness spike",
+            "quote": "NO WAY",
+            "origin": "fused",
+            "score": 7.1,
+            "messages": [],
+        },
+    )
+
+    clip = captured["clip"]
+    assert clip["meta"]["analysis"] == "live-content"
+    assert clip["meta"]["origin"] == "fused"
+    assert clip["quote"] == "NO WAY"
+    assert clip["scores"]["overall"] == 71
 
 
 def test_process_live_moment_requires_a_capture():

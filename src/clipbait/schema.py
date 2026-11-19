@@ -170,6 +170,13 @@ class ChatMessage(BaseModel):
 
 
 class SpikeSignal(BaseModel):
+    """Why a moment was cut, in numbers.
+
+    Chat and on-stream content share this shape so the UI can render one
+    explanation card. A fused moment fills both halves: the chat block says how
+    the audience reacted, the content block says what the streamer actually did.
+    """
+
     rate: float = 0.0
     rate_z: float = 0.0
     unique_z: float = 0.0
@@ -178,6 +185,13 @@ class SpikeSignal(BaseModel):
     sentiment: float = 0.0
     score: float = 0.0
     top_messages: list[str] = Field(default_factory=list)
+    # On-stream content signals (speech / audio / action).
+    speech: float = 0.0
+    loudness: float = 0.0
+    action: float = 0.0
+    quote: str = ""
+    reasons: list[str] = Field(default_factory=list)
+    origin: str = "chat"  # chat | speech | audio | action | fused
 
 
 class LiveMoment(BaseModel):
@@ -208,6 +222,14 @@ class MonitorOptions(BaseModel):
     max_clips: int = Field(default=8, ge=1, le=50)
     region: str = "US"
     platform: Literal["tiktok", "reels", "shorts", "linkedin", "x"] = "tiktok"
+    # Watch the stream itself, not only chat: transcribe the rolling buffer,
+    # measure audio spikes and scene motion, and clip when the streamer says or
+    # does something worth cutting. This is what catches a viral line before
+    # chat has time to react.
+    content_detection: bool = True
+    content_threshold: float = Field(default=2.5, ge=0.5, le=12)
+    content_interval: int = Field(default=18, ge=8, le=120)
+    speech_window: int = Field(default=32, ge=12, le=120)
 
 
 class LiveMonitor(BaseModel):
@@ -271,3 +293,8 @@ class RenderRequest(BaseModel):
     reframe_mode: ReframeMode | None = None
     captions: bool | None = None
     hook_titles: bool | None = None
+
+
+class MarkUploadedRequest(BaseModel):
+    url: str | None = None
+    platform: str | None = None

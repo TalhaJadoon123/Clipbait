@@ -6,6 +6,7 @@ import { Live } from "./pages/Live";
 import { LiveMonitor } from "./pages/LiveMonitor";
 import { NewClip } from "./pages/NewClip";
 import { ProjectDetail } from "./pages/ProjectDetail";
+import { MoneyQueuePage } from "./pages/MoneyQueue";
 
 const router = createBrowserRouter([
   {
@@ -14,6 +15,7 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <Dashboard /> },
       { path: "new", element: <NewClip /> },
+      { path: "queue", element: <MoneyQueuePage /> },
       { path: "projects/:id", element: <ProjectDetail /> },
       { path: "live", element: <Live /> },
       { path: "live/:id", element: <LiveMonitor /> },

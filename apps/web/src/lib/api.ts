@@ -67,6 +67,30 @@ export const api = {
   selectVariant: (clipId: string, variantId: string) =>
     request<import("../types").Clip>(`/clips/${clipId}/variants/${variantId}`, { method: "POST" }),
 
+  queue: (params?: { limit?: number; min_score?: number; include_posted?: boolean }) => {
+    const search = new URLSearchParams();
+    if (params?.limit) search.set("limit", String(params.limit));
+    if (params?.min_score) search.set("min_score", String(params.min_score));
+    if (params?.include_posted) search.set("include_posted", "true");
+    const suffix = search.toString() ? `?${search.toString()}` : "";
+    return request<import("../types").MoneyQueue>(`/queue${suffix}`);
+  },
+  markUploaded: (clipId: string, body?: { url?: string; platform?: string }) =>
+    request<{ clip: import("../types").Clip; item: import("../types").QueueItem | null }>(
+      `/clips/${clipId}/uploaded`,
+      { method: "POST", body: JSON.stringify(body ?? {}) },
+    ),
+  exportClip: (clipId: string) =>
+    request<{
+      clip_id: string;
+      dir: string;
+      slug: string;
+      platform: string;
+      files: string[];
+      expected_usd: number;
+      usd_range: [number, number];
+    }>(`/clips/${clipId}/export`, { method: "POST" }),
+
   monitors: () => request<import("../types").Monitor[]>("/live/monitors"),
   monitor: (id: string) => request<import("../types").Monitor>(`/live/monitors/${id}`),
   createMonitor: (url: string, title: string, options: Record<string, unknown>) =>

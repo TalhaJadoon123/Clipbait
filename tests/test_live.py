@@ -35,11 +35,13 @@ def no_sleep(monkeypatch):
 class FakeRecorder(recorder.Recorder):
     kind = "fake"
 
-    def __init__(self) -> None:
+    def __init__(self, window: tuple[float, float] | None = None) -> None:
         self.started = 0
         self.stopped = 0
         self.slices: list[tuple[float, float, Path]] = []
         self.clear_calls = 0
+        self.window = window
+        self._started = 0.0
 
     def start(self) -> None:
         self.started += 1
@@ -54,7 +56,10 @@ class FakeRecorder(recorder.Recorder):
         return out
 
     def stats(self) -> dict:
-        return {"kind": self.kind, "slices": len(self.slices)}
+        data = {"kind": self.kind, "slices": len(self.slices)}
+        if self.window:
+            data["available_from"], data["available_until"] = self.window
+        return data
 
 
 class FakeChat(chat.ChatSource):
@@ -565,6 +570,9 @@ def test_hls_start_maps_video_and_audio(monkeypatch, tmp_path):
     assert cmd.count("-i") == 2
     assert "0:v:0" in cmd and "1:a:0?" in cmd
     assert cmd[cmd.index("-i") + 1] == "https://cdn/v.m3u8"
+    # Every live input starts at the live edge, not the start of the DVR.
+    assert cmd.count("-live_start_index") == 2
+    assert cmd[cmd.index("-live_start_index") + 1] == "-1"
     rec.stop()
 
 
@@ -585,6 +593,7 @@ def test_hls_watch_and_prune(monkeypatch, tmp_path):
     assert [segment.path.name for segment in rec._segments] == ["seg_000000.ts", "seg_000001.ts"]
     assert rec._segments[1].start == 4.0
 
+
     settings = dataclasses.replace(get_settings(), live_buffer_seconds=2)
     monkeypatch.setattr(recorder, "get_settings", lambda: settings)
     rec._prune()
@@ -596,10 +605,22 @@ def test_hls_watch_and_prune(monkeypatch, tmp_path):
     rec._prune()  # no segments: no-op
     assert rec.stats()["buffered_seconds"] == 0.0
 
+def test_hls_scan_reads_three_column_segment_lists(tmp_path):
+    """ffmpeg writes name,start,end; column 2 is a start time, not a duration."""
+    rec = recorder.HlsRecorder("https://twitch.tv/x", tmp_path, segment_seconds=4)
+    for index in range(2):
+        (tmp_path / f"seg_00000{index}.ts").write_bytes(b"x")
+    (tmp_path / "segments.csv").write_text(
+        "seg_000000.ts,120.000000,124.000000\nseg_000001.ts,124.000000,128.500000\n",
+        encoding="utf-8",
+    )
+    rec._scan(tmp_path / "segments.csv")
+    assert [(s.start, s.end) for s in rec._segments] == [(0.0, 4.0), (4.0, 8.5)]
+
 
 def test_hls_slice(monkeypatch, tmp_path):
     rec = recorder.HlsRecorder("https://twitch.tv/x", tmp_path)
-    with pytest.raises(recorder.RecorderError, match="older than the ring buffer"):
+    with pytest.raises(recorder.RecorderError, match="buffer empty"):
         rec.slice(10, 20, tmp_path / "out.mp4")
 
     (tmp_path / "seg_000000.ts").write_bytes(b"a")
@@ -859,8 +880,139 @@ def test_live_runner_capture_failure_is_published(monkeypatch):
     for thread in runner._clip_threads:
         thread.join(timeout=5)
 
-    assert any(event["type"] == "capture_failed" for event in events)
+    # A buffer miss is a skip, not a crash: the reason lands on the moment and
+    # nothing is queued for rendering.
+    assert any(event["type"] == "capture_skipped" for event in events)
     assert any("buffer gone" in event.get("error", "") for event in events)
+    assert not any(event["type"] == "clip_queued" for event in events)
+    moment = db.list_moments(monitor["id"])[0]
+    assert "buffer gone" in moment["signal"]["capture_error"]
+
+
+def test_live_runner_unexpected_capture_error_is_published(monkeypatch):
+    monitor = make_monitor()
+    runner = LiveRunner(monitor)
+
+    class BrokenRecorder(FakeRecorder):
+        def slice(self, start, end, out):
+            raise RuntimeError("ffmpeg segfaulted")
+
+    monkeypatch.setattr(
+        "clipbait.live.orchestrator.build_recorder", lambda url, d: BrokenRecorder()
+    )
+    monkeypatch.setattr(
+        "clipbait.live.orchestrator.resolve_chat_source",
+        lambda url, provider, key: FakeChat([ChatMessage(t=5.2, text="W")]),
+    )
+    runner.detector = FakeDetector(candidate())
+    monkeypatch.setattr(runner, "elapsed", lambda: 1000.0)
+
+    events: list[dict] = []
+    monkeypatch.setattr(
+        "clipbait.live.orchestrator._publish", lambda mid, event: events.append(event)
+    )
+    runner.start()
+    runner._thread.join(timeout=5)
+    for thread in runner._clip_threads:
+        thread.join(timeout=5)
+
+    assert any(event["type"] == "capture_failed" for event in events)
+    assert any("segfaulted" in event.get("error", "") for event in events)
+
+
+def test_capture_clamps_a_moment_to_the_ring_buffer(monkeypatch):
+    """A moment that starts before the first segment is trimmed, not dropped."""
+    monitor = make_monitor()
+    runner = LiveRunner(monitor)
+    fake_recorder = FakeRecorder(window=(6.0, 40.0))
+    runner.recorder = fake_recorder
+    monkeypatch.setattr(runner, "elapsed", lambda: 1000.0)
+
+    submitted: list[dict] = []
+    monkeypatch.setattr(
+        "clipbait.jobs.submit",
+        lambda kind, fn, **kwargs: submitted.append({"kind": kind, **kwargs}) or {"id": "job_1"},
+    )
+    # Recorder only has 6.0 onward, so the head of the moment is trimmed.
+    spike = dataclasses.replace(candidate(), start=2.0, end=12.0, trigger_at=12.0)
+    moment = db.create_moment(
+        {
+            "monitor_id": monitor["id"],
+            "start": spike.start,
+            "end": spike.end,
+            "score": spike.score,
+            "signal": spike.signal.model_dump(),
+            "messages": [m.model_dump() for m in spike.messages],
+        }
+    )
+
+    runner._capture(spike, moment, "clamped")
+
+    assert fake_recorder.slices and fake_recorder.slices[0][:2] == (6.0, 12.0)
+    stored = db.get("moments", moment["id"])
+    assert (stored["start"], stored["end"]) == (6.0, 12.0)
+    assert len(submitted) == 1
+    payload = submitted[0]["args"][1]
+    assert payload["start"] == 6.0
+    assert [message["text"] for message in payload["messages"]] == ["W"]
+
+
+def test_capture_skips_a_moment_the_buffer_never_saw(monkeypatch):
+    monitor = make_monitor()
+    runner = LiveRunner(monitor)
+    fake_recorder = FakeRecorder(window=(120.0, 180.0))
+    runner.recorder = fake_recorder
+    monkeypatch.setattr(runner, "elapsed", lambda: 1000.0)
+    monkeypatch.setattr(runner, "CAPTURE_WAIT_SECONDS", 0.0)
+
+    events: list[dict] = []
+    monkeypatch.setattr(
+        "clipbait.live.orchestrator._publish", lambda mid, event: events.append(event)
+    )
+    monkeypatch.setattr(
+        "clipbait.jobs.submit", lambda *a, **k: pytest.fail("nothing to render")
+    )
+    spike = candidate()  # 5.0-9.0, long before the buffer starts at 120
+    moment = db.create_moment(
+        {
+            "monitor_id": monitor["id"],
+            "start": spike.start,
+            "end": spike.end,
+            "score": spike.score,
+            "signal": spike.signal.model_dump(),
+            "messages": [m.model_dump() for m in spike.messages],
+        }
+    )
+
+    runner._capture(spike, moment, "too early")
+
+    assert not fake_recorder.slices
+    assert any(event["type"] == "capture_skipped" for event in events)
+    stored = db.get("moments", moment["id"])
+    assert "ring buffer" in stored["signal"]["capture_error"]
+
+
+def test_hls_recorder_rebases_the_first_segment_onto_the_monitor_clock(monkeypatch, tmp_path):
+    """The first segment is stamped on the monitor clock, not at internal zero."""
+    directory = tmp_path / "live"
+    rec = recorder.HlsRecorder("https://youtube.com/watch?v=x", directory, origin=None)
+    rec._started = 100.0
+    rec._origin = 100.0
+    # Capture began at 100.0; the first 4s segment is listed 24s later, so it
+    # covers 20.0-24.0 on the monitor clock rather than 0.0-4.0.
+    monkeypatch.setattr("clipbait.live.recorder.time.monotonic", lambda: 124.0)
+    (directory / "seg_000000.ts").write_bytes(b"x")
+    (directory / "segments.csv").write_text("seg_000000.ts,4.0\n", encoding="utf-8")
+    rec._scan(directory / "segments.csv")
+    assert [(s.start, s.end) for s in rec._segments] == [(20.0, 24.0)]
+
+    # Later segments chain directly off the previous end.
+    (directory / "seg_000001.ts").write_bytes(b"x")
+    (directory / "segments.csv").write_text(
+        "seg_000000.ts,4.0\nseg_000001.ts,4.0\n", encoding="utf-8"
+    )
+    rec._scan(directory / "segments.csv")
+    assert [(s.start, s.end) for s in rec._segments] == [(20.0, 24.0), (24.0, 28.0)]
 
 
 class StubRunner:
@@ -940,3 +1092,93 @@ def test_status_uses_persisted_stats_when_not_alive(stub_runners, monkeypatch):
     runner._alive = False
     db.update_monitor(monitor["id"], stats={"messages": 3})
     assert live.status(monitor["id"]) == {"messages": 3}
+
+
+# --------------------------------------------------------------- content fusion
+
+
+def test_chat_and_content_within_twelve_seconds_fuse(monkeypatch):
+    monitor = make_monitor(auto_clip=False)
+    runner = LiveRunner(monitor)
+    events: list[dict] = []
+    monkeypatch.setattr(
+        "clipbait.live.orchestrator._publish", lambda mid, event: events.append(event)
+    )
+
+    runner._on_candidate(candidate(), "chat", 9.0)
+    content = MomentCandidate(
+        start=2.0,
+        end=30.0,
+        trigger_at=15.0,
+        score=3.4,
+        signal=SpikeSignal(
+            speech=4.2,
+            loudness=1.1,
+            quote="NO WAY! I can't believe it",
+            reasons=["hype language: no way", "loudness spike"],
+            origin="speech",
+        ),
+        messages=[ChatMessage(t=14.0, author="c", text="NO WAY")],
+    )
+    runner._on_candidate(content, "content", 15.0)
+
+    moments = db.list_moments(monitor["id"])
+    assert len(moments) == 1
+    signal = moments[0]["signal"]
+    assert signal["origin"] == "fused"
+    assert signal["speech"] > 0 and signal["rate"] > 0
+    assert signal["quote"].startswith("NO WAY")
+    assert signal["score"] > content.score
+    assert [event["type"] for event in events] == ["spike", "spike_fused"]
+
+
+def test_distinct_content_moments_are_separate_clips(monkeypatch):
+    monitor = make_monitor(auto_clip=False)
+    runner = LiveRunner(monitor)
+    monkeypatch.setattr("clipbait.live.orchestrator._publish", lambda mid, event: None)
+
+    first = MomentCandidate(
+        start=0.0,
+        end=20.0,
+        trigger_at=10.0,
+        score=3.0,
+        signal=SpikeSignal(speech=3.0, quote="wait what", origin="speech"),
+        messages=[],
+    )
+    second = MomentCandidate(
+        start=80.0,
+        end=110.0,
+        trigger_at=100.0,
+        score=3.2,
+        signal=SpikeSignal(action=3.0, origin="action"),
+        messages=[],
+    )
+    runner._on_candidate(first, "content", 10.0)
+    runner._on_candidate(second, "content", 100.0)
+
+    moments = db.list_moments(monitor["id"])
+    assert len(moments) == 2
+    assert {moment["signal"]["origin"] for moment in moments} == {"speech", "action"}
+
+
+def test_content_candidate_pulls_chat_evidence_from_the_detector(monkeypatch):
+    monitor = make_monitor(auto_clip=False)
+    runner = LiveRunner(monitor)
+    monkeypatch.setattr("clipbait.live.orchestrator._publish", lambda mid, event: None)
+    runner.detector._message_log = [
+        ChatMessage(t=6.0, author="a", text="inside"),
+        ChatMessage(t=40.0, author="b", text="outside"),
+    ]
+
+    content = MomentCandidate(
+        start=5.0,
+        end=30.0,
+        trigger_at=12.0,
+        score=3.1,
+        signal=SpikeSignal(speech=3.1, quote="look at this", origin="speech"),
+        messages=[],
+    )
+    runner._on_candidate(content, "content", 12.0)
+
+    moment = db.list_moments(monitor["id"])[0]
+    assert [message["text"] for message in moment["messages"]] == ["inside"]

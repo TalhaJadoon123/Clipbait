@@ -63,6 +63,15 @@ def concat_file(segments: list[Segment], path: Path) -> Path:
 class Recorder:
     kind = "base"
 
+    @property
+    def started_at(self) -> float:
+        """``time.monotonic()`` when this recorder began writing media.
+
+        Zero until ``start()`` runs. The runner adopts this value as the monitor
+        clock so chat, content windows and segment timestamps share one origin.
+        """
+        return self._started
+
     def start(self) -> None: ...
 
     def stop(self) -> None: ...
@@ -122,10 +131,21 @@ class HlsRecorder(Recorder):
 
     kind = "hls"
 
-    def __init__(self, url: str, directory: Path, segment_seconds: int = 4) -> None:
+    def __init__(
+        self,
+        url: str,
+        directory: Path,
+        segment_seconds: int = 4,
+        *,
+        origin: float | None = None,
+    ) -> None:
         self.url = url
         self.directory = directory
         self.segment_seconds = segment_seconds
+        # ``origin`` is the monitor clock (time.monotonic) the runner started at.
+        # Segment timestamps are rebased onto it so chat times and video times
+        # agree even though resolving a live URL takes 20-40 seconds.
+        self._origin = origin
         self.directory.mkdir(parents=True, exist_ok=True)
         self._segments: list[Segment] = []
         self._seen: set[str] = set()
@@ -136,7 +156,10 @@ class HlsRecorder(Recorder):
 
     def start(self) -> None:
         streams = resolve_live_streams(self.url)
+        # Resolving the URL can take 20-40s. Stamp the clock *after* that, the
+        # moment ffmpeg really starts writing, and rebase segments onto it.
         self._started = time.monotonic()
+        self._origin = self._started
         list_path = self.directory / "segments.csv"
         cmd = [
             get_settings().ffmpeg,
@@ -151,11 +174,16 @@ class HlsRecorder(Recorder):
             "1",
             "-reconnect_delay_max",
             "5",
+            # A live HLS playlist often carries an hour of DVR. Without this,
+            # ffmpeg starts at the oldest segment and races through the backlog
+            # at 20x realtime, so segment timestamps stop tracking the clock.
+            "-live_start_index",
+            "-1",
             "-i",
             streams[0],
         ]
         if len(streams) > 1:
-            cmd += ["-i", streams[1], "-map", "0:v:0", "-map", "1:a:0?"]
+            cmd += ["-live_start_index", "-1", "-i", streams[1], "-map", "0:v:0", "-map", "1:a:0?"]
         cmd += [
             "-c",
             "copy",
@@ -178,28 +206,49 @@ class HlsRecorder(Recorder):
 
     def _watch(self, list_path: Path) -> None:
         while not self._stop.is_set():
-            try:
-                if list_path.exists():
-                    with list_path.open("r", encoding="utf-8") as handle:
-                        for row in csv.reader(handle):
-                            if len(row) < 2:
-                                continue
-                            name, duration = row[0], row[1]
-                            if name in self._seen:
-                                continue
-                            try:
-                                seconds = float(duration)
-                            except ValueError:
-                                continue
-                            self._seen.add(name)
-                            start = sum(s.duration for s in self._segments)
-                            self._segments.append(
-                                Segment(self.directory / name, start, seconds)
-                            )
-                    self._prune()
-            except OSError:
-                pass
+            self._scan(list_path)
             time.sleep(1.0)
+
+    def _scan(self, list_path: Path) -> None:
+        """Read new rows from ffmpeg's segment list, one pass."""
+        try:
+            if list_path.exists():
+                with list_path.open("r", encoding="utf-8") as handle:
+                    for row in csv.reader(handle):
+                        if len(row) < 2:
+                            continue
+                        name = row[0]
+                        if name in self._seen:
+                            continue
+                        # ffmpeg writes ``name,start,end`` for CSV segment lists;
+                        # older builds wrote ``name,duration``. Using column 2 as
+                        # a duration quadrupled every timestamp, so accept both.
+                        try:
+                            if len(row) >= 3:
+                                seconds = float(row[2]) - float(row[1])
+                            else:
+                                seconds = float(row[1])
+                        except ValueError:
+                            continue
+                        if seconds <= 0:
+                            seconds = float(self.segment_seconds)
+                        self._seen.add(name)
+                        if self._segments:
+                            start = self._segments[-1].end
+                        elif self._origin is not None:
+                            # First segment: its start is ``duration`` before
+                            # it was discovered, measured on the monitor clock.
+                            start = max(
+                                0.0, time.monotonic() - self._origin - seconds
+                            )
+                        else:
+                            start = 0.0
+                        self._segments.append(
+                            Segment(self.directory / name, start, seconds)
+                        )
+                self._prune()
+        except OSError:
+            pass
 
     def _prune(self) -> None:
         keep = get_settings().live_buffer_seconds
@@ -225,7 +274,15 @@ class HlsRecorder(Recorder):
     def slice(self, start: float, end: float, out: Path) -> Path:
         segments, offset = select_segments(self._segments, start, end)
         if not segments:
-            raise RecorderError("requested range is older than the ring buffer")
+            window = (
+                f"{self._segments[0].start:.1f}-{self._segments[-1].end:.1f}s"
+                if self._segments
+                else "empty"
+            )
+            raise RecorderError(
+                f"no recorded segment overlaps {start:.1f}-{end:.1f}s "
+                f"(buffer {window})"
+            )
         # Wait for the last segment to be complete before cutting.
         deadline = time.monotonic() + 90
         while segments[-1].end < end:
@@ -276,6 +333,8 @@ class HlsRecorder(Recorder):
             "buffered_seconds": round(self._segments[-1].end - self._segments[0].start, 1)
             if self._segments
             else 0.0,
+            "available_from": round(self._segments[0].start, 1) if self._segments else 0.0,
+            "available_until": round(self._segments[-1].end, 1) if self._segments else 0.0,
         }
 
 
@@ -297,9 +356,11 @@ class FileRecorder(Recorder):
         pass
 
     def slice(self, start: float, end: float, out: Path) -> Path:
-        duration = max(0.5, min(end, self._loop_seconds) - start)
-        if start >= self._loop_seconds:
-            start = 0.0
+        loop = self._loop_seconds
+        span = max(0.5, end - start)
+        if loop and start >= loop:
+            start = start % loop
+        duration = max(0.5, min(span, loop - start)) if loop else span
         out.parent.mkdir(parents=True, exist_ok=True)
         media.run(
             [
@@ -331,14 +392,19 @@ class FileRecorder(Recorder):
         return out
 
     def stats(self) -> dict:
-        return {"kind": self.kind, "source_seconds": round(self._info.duration, 1)}
+        return {
+            "kind": self.kind,
+            "source_seconds": round(self._info.duration, 1),
+            "available_from": 0.0,
+            "available_until": round(self._loop_seconds or self._info.duration, 1),
+        }
 
 
-def build_recorder(url: str, directory: Path) -> Recorder:
+def build_recorder(url: str, directory: Path, *, origin: float | None = None) -> Recorder:
     if url.startswith("demo://") or url == "demo":
         return DemoRecorder(directory)
     if "twitch.tv" in url or "youtube.com" in url or "youtu.be" in url:
-        return HlsRecorder(url, directory)
+        return HlsRecorder(url, directory, origin=origin)
     raise RecorderError("unsupported live URL; use YouTube, Twitch or demo://live")
 
 

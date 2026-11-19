@@ -552,7 +552,15 @@ def process_live_moment(
 
     chat = [ChatMessage(**message) for message in moment.get("messages", [])]
     title = moment.get("title") or "The chat went wild"
+    origin = moment.get("origin") or "chat"
+    quote = (moment.get("quote") or "").strip()
     score = int(max(0, min(100, round(moment.get("score", 0) * 10))))
+    default_reason = (
+        "On-stream signal: something happened worth clipping."
+        if origin != "chat"
+        else "Chat velocity spiked here."
+    )
+    reason = moment.get("reason") or default_reason
 
     region = get_region(options.region)
     highlight = Highlight(
@@ -560,11 +568,14 @@ def process_live_moment(
         end=max(1.0, info.duration),
         title=title[:80],
         hook=(moment.get("hook") or title)[:120],
-        reason=moment.get("reason", "Chat velocity spiked here."),
+        reason=reason,
+        quote=quote[:200],
         scores={"hook": score, "emotion": score, "value": score, "share": score, "overall": score},
         source="live",
     )
-    live_text = moment.get("reason") or title
+    # Score the copy on what was actually said, not on the detector's own
+    # explanation. A quote is the strongest hook a stream clip can have.
+    live_text = quote or reason or title
     variants = (
         build_variants(highlight, live_text, region, options.platform, limit=options.variants)
         if options.memes
@@ -586,13 +597,16 @@ def process_live_moment(
             "project_id": project_id,
             "title": chosen["title"] if chosen else title[:80],
             "hook": chosen["hook"] if chosen else (moment.get("hook") or title)[:120],
-            "description": chosen["description"] if chosen else "Auto-cut from a live chat spike.",
+            "description": chosen["description"]
+            if chosen
+            else ("Auto-cut from an on-stream moment." if origin != "chat" else "Auto-cut from a live chat spike."),
             "hashtags": chosen["hashtags"] if chosen else ["live", "shorts", "reels", "clips"],
             "start": 0.0,
             "end": max(1.0, info.duration),
             "score": score,
             "scores": {"hook": score, "emotion": score, "value": score, "share": score, "overall": score},
-            "reason": moment.get("reason", "Chat velocity spiked here."),
+            "reason": reason,
+            "quote": quote,
             "caption_preset": options.caption_preset,
             "reframe_mode": options.reframe_mode,
             "captions": options.captions,
@@ -601,8 +615,10 @@ def process_live_moment(
                 "live": True,
                 "monitor_id": moment.get("monitor_id"),
                 "moment_id": moment.get("moment_id"),
+                "origin": origin,
+                "signal": moment.get("signal"),
                 "chat": [message.model_dump() for message in chat] if options.chat_overlay else [],
-                "analysis": "live-chat-spike",
+                "analysis": "live-content" if origin != "chat" else "live-chat-spike",
                 "transcriber": transcript.provider,
                 "region": region.code,
                 "platform": options.platform,

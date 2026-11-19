@@ -173,6 +173,8 @@ def live_args(source: str = "demo", **overrides) -> argparse.Namespace:
         "no_clip": False,
         "no_captions": False,
         "no_chat_overlay": False,
+        "no_content": False,
+        "content_threshold": 2.5,
     }
     data.update(overrides)
     return argparse.Namespace(**data)
@@ -301,3 +303,113 @@ def test_path_expansion(monkeypatch, render_stub, tmp_path):
     cli.cmd_process(process_args(str(source)))
     project = db.get_project(render_stub[0]["project_id"])
     assert project["source_kind"] == "local"
+
+
+def test_live_content_flags_reach_the_monitor_options(monkeypatch, tmp_path):
+    """--no-content and --content-threshold must persist, not just parse."""
+    from clipbait import live
+
+    started: list[dict] = []
+
+    class FakeLive:
+        @staticmethod
+        def start(monitor_id: str) -> None:
+            started.append(db.get_monitor(monitor_id))
+
+        @staticmethod
+        def stop(monitor_id: str) -> None:
+            pass
+
+    # cmd_live imports the module locally, so patch the registry module.
+    monkeypatch.setattr(live, "start", FakeLive.start)
+    monkeypatch.setattr(live, "stop", FakeLive.stop)
+
+    def stop_the_loop(_seconds):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("time.sleep", stop_the_loop)
+    args = argparse.Namespace(
+        source="demo",
+        threshold=3.0,
+        chat_provider="demo",
+        preset="default",
+        region="US",
+        platform="tiktok",
+        title=None,
+        no_clip=False,
+        no_captions=False,
+        no_chat_overlay=False,
+        no_content=True,
+        content_threshold=4.5,
+    )
+    assert cli.cmd_live(args) == 0
+    options = started[0]["options"]
+    assert options["content_detection"] is False
+    assert options["content_threshold"] == 4.5
+
+
+def _ready_clip(score: int = 80) -> dict:
+    project = db.create_project(
+        {
+            "title": "CLI money",
+            "source_kind": "local",
+            "duration": 120.0,
+            "options": {"region": "US", "platform": "tiktok"},
+        }
+    )
+    clip = db.create_clip(
+        {
+            "project_id": project["id"],
+            "title": "Queue me",
+            "hook": "Queue me",
+            "description": "copy",
+            "hashtags": ["#shorts"],
+            "start": 10.0,
+            "end": 48.0,
+            "score": score,
+            "status": "ready",
+            "meta": {"region": "US", "forecast": {"overall": score}},
+        }
+    )
+    path = storage.project_dir(project["id"]) / "clips" / f"{clip['id']}.mp4"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\x00" * 2048)
+    return db.update("clips", clip["id"], {"render_path": storage.relative(path)}) or clip
+
+
+def test_queue_command_ranks_and_exports(capsys):
+    clip = _ready_clip()
+    assert cli.main(["queue"]) == 0
+    out = capsys.readouterr().out
+    assert "ready clip" in out
+    assert "Queue me" in out
+
+    assert cli.main(["queue", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["count"] >= 1
+    assert any(item["clip_id"] == clip["id"] for item in payload["items"])
+
+    assert cli.main(["queue", "--export"]) == 0
+    out = capsys.readouterr().out
+    assert "exported" in out
+
+
+def test_queue_mark_uploaded_hides_the_clip(capsys):
+    clip = _ready_clip(score=75)
+    assert cli.main(["queue", "--mark", clip["id"], "--url", "https://x.test/p"]) == 0
+    assert "marked" in capsys.readouterr().out
+    assert cli.main(["queue", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert all(item["clip_id"] != clip["id"] for item in payload["items"])
+    assert cli.main(["queue", "--mark", "clip_nope"]) == 1
+
+
+def test_parser_exposes_content_and_queue_flags():
+    parser = cli.build_parser()
+    live = parser.parse_args(["live", "demo", "--no-content", "--content-threshold", "4"])
+    assert live.no_content is True
+    assert live.content_threshold == 4.0
+    queue = parser.parse_args(["queue", "--limit", "5", "--export", "--min-score", "70"])
+    assert queue.limit == 5
+    assert queue.export is True
+    assert queue.min_score == 70.0

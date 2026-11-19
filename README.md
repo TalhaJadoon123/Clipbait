@@ -37,6 +37,8 @@ And one engineering constraint: **the zero-key path is a first-class product**. 
 | Face-aware virtual camera (`sendcmd` crop) | ✅ | partial | ✅ |
 | Blur bed / split-screen layouts | ✅ | partial | ✅ |
 | **Live chat spike detection → auto-clip** | ✅ | ❌ | paid tier |
+| **On-stream detection (speech, loudness, action)** | ✅ | ❌ | ❌ |
+| **Revenue-ranked posting queue + export bundles** | ✅ | ❌ | analytics only |
 | **Region playbooks (26 markets)** | ✅ | ❌ | ❌ |
 | **Meme-format matching (26 formats)** | ✅ | ❌ | ❌ |
 | **Meme video b-roll inserts (gap/signal-triggered)** | ✅ | ❌ | ❌ |
@@ -116,6 +118,7 @@ Open `http://127.0.0.1:8000`:
 * **Projects** — every long-video run, live progress over SSE, rendered clip cards.
 * **New clip** — URL or upload, region + platform, caption preset, reframe mode, variant count.
 * **Live** — start a monitor from a YouTube/Twitch URL, or run the synthetic demo stream.
+* **Money queue** — every rendered clip priced by expected revenue, recommended platform, copy-ready caption, one-click export and posted tracking.
 * **Playbooks** — browse all 26 region profiles, 26 meme formats, caption looks and detected capabilities.
 
 ### CLI
@@ -128,9 +131,19 @@ clipbait process ./podcast.mp4 --clips 6 --target-seconds 50 \
 # A YouTube/Twitch VOD
 clipbait process "https://www.youtube.com/watch?v=..." --region US --platform tiktok
 
-# Watch live chat and clip the spikes (demo needs no network)
+# Watch the stream and the chat, clip whatever goes viral (demo needs no network)
 clipbait live demo --threshold 2.5
 clipbait live "https://www.twitch.tv/somechannel" --region BR --platform reels
+
+# Chat only, or tune on-stream detection independently
+clipbait live "https://www.youtube.com/watch?v=..." --no-content
+clipbait live "https://www.youtube.com/watch?v=..." --content-threshold 3.2
+
+# What to post next, ranked by expected revenue
+clipbait queue
+clipbait queue --json --min-score 60
+clipbait queue --export
+clipbait queue --mark clip_abc123 --url "https://tiktok.com/@me/video/1"
 
 # Inspect the environment
 clipbait doctor
@@ -157,6 +170,9 @@ POST   /clips/{id}/render
 POST   /clips/{id}/variants/{variant_id}
 GET    /clips/{id}/video
 GET    /clips/{id}/thumb
+POST   /clips/{id}/uploaded      {url?, platform?}
+POST   /clips/{id}/export        upload-ready bundle
+GET    /queue                    ready clips ranked by expected USD
 GET    /live/monitors
 POST   /live/monitors
 POST   /live/monitors/{id}/start|stop
@@ -257,12 +273,15 @@ tests/          spike logic, captions, ranking, virality, API, reframe
 
 ## Live clipping
 
-Clipbait treats live chat as the highlight signal.
+Clipbait watches the chat **and** the stream itself.
 
 * **Rolling capture**: 4-second MPEG-TS segments in a three-minute ring buffer, pruned as it grows.
-* **Spike evidence**: rate z-score (median + MAD baseline), unique-author z-score, hype-lexicon density, duplicate-message ratio and sentiment intensity. The trigger stores the evidence, so a clip can explain *why* it was cut.
+* **Chat evidence**: rate z-score (median + MAD baseline), unique-author z-score, hype-lexicon density, duplicate-message ratio and sentiment intensity. The trigger stores the evidence, so a clip can explain *why* it was cut.
+* **On-stream evidence**: the newest 32s of buffer is transcribed and scored for hype language, exclamations, pace and repetition; the audio track is checked for a sudden loudness jump against its own baseline; the video track is checked for hard scene-change bursts. A viral line is caught before chat has time to react.
+* **Fusion**: a chat spike and an on-stream moment within 12 seconds become one moment, one clip, with both sets of evidence.
 * **Pre-roll first**: default 25s before the trigger, 20s after. Tune with `--pre-roll` / `--post-roll` in `MonitorOptions`.
-* **Non-blocking**: rendering happens on a separate thread; the chat loop keeps capturing.
+* **Non-blocking**: rendering happens on a separate thread; chat and content detection keep running.
+* **Money layer**: every ready clip is priced by expected revenue and recommended platform, then exported as an upload bundle. See [`docs/MONEY.md`](docs/MONEY.md).
 
 Chat sources:
 
@@ -275,14 +294,16 @@ Chat sources:
 | `demo://live` | none | synthetic stream + scripted chat spikes |
 
 ```bash
-clipbait live demo --threshold 2.5
+clipbait live demo --threshold 2.5          # chat + on-stream detection
+clipbait live <url> --no-content            # chat only
+clipbait queue                              # what to post, where, for how much
 ```
 
 The demo generates a 4-minute synthetic stream locally, spikes chat three times, and renders clips end-to-end with chat overlay. It is the fastest way to verify the whole live path without a real broadcast.
 
 > Only clip streams you own or have permission to reuse. Respect platform terms and local law. See [Responsible use](#responsible-use).
 
-Details: [`docs/LIVE.md`](docs/LIVE.md).
+Details: [`docs/LIVE.md`](docs/LIVE.md) and [`docs/MONEY.md`](docs/MONEY.md).
 
 ---
 

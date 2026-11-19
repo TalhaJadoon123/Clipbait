@@ -25,18 +25,21 @@ from ..analyze import prompts
 from ..captions import preset_catalog
 from ..config import detect_capabilities, get_settings
 from ..events import bus
+from ..money import build_queue, export_bundle, mark_uploaded, queue_item
 from ..net_guard import UnsafeUrl, ensure_safe_url
 from ..pipeline import process_project, render_clip_record
 from ..schema import (
     ClipPatch,
     CreateMonitorRequest,
     CreateProjectRequest,
+    MarkUploadedRequest,
     MonitorOptions,
     ProjectOptions,
     RenderRequest,
 )
 from ..virality import catalog as region_catalog
 from ..virality.memes import MEMES
+from ..virality.payout import PLATFORM_RPM
 
 log = logging.getLogger("clipbait.api")
 settings = get_settings()
@@ -68,6 +71,9 @@ WEB_DIST = _resolve_web_dist()
 async def lifespan(app: FastAPI):
     settings.ensure_dirs()
     db.init_db()
+    stale = db.reconcile_monitors()
+    if stale:
+        log.info("closed %s orphaned live monitor(s) from a previous run", stale)
     bus.bind_loop(asyncio.get_running_loop())
     log.info("clipbait %s ready · data=%s", "0.1.0", settings.data_dir)
     yield
@@ -109,6 +115,22 @@ def meta() -> dict:
             for meme in MEMES
         ],
         "live_providers": ["auto", "youtube", "twitch", "demo"],
+        "content_detection": {
+            "signals": ["speech", "audio", "action"],
+            "default_threshold": 2.5,
+            "fuse_window": 12,
+        },
+        "money": {
+            "platforms": {
+                platform: {
+                    "rpm_low": rpm[0],
+                    "rpm": rpm[1],
+                    "rpm_high": rpm[2],
+                }
+                for platform, rpm in PLATFORM_RPM.items()
+            },
+            "note": "RPM medians for creator payouts; estimates are directional.",
+        },
         "data_dir": str(settings.data_dir),
     }
 
@@ -326,6 +348,39 @@ def clip_thumb(clip_id: str) -> FileResponse:
     if not path or not path.exists():
         raise HTTPException(404, "thumbnail missing")
     return FileResponse(path, media_type="image/jpeg")
+
+
+# ---------------------------------------------------------------------- money
+
+
+@router.get("/queue")
+def money_queue(
+    limit: int = Query(20, ge=1, le=200),
+    min_score: float = Query(0, ge=0, le=100),
+    include_posted: bool = False,
+) -> dict:
+    """Ready clips ranked by expected revenue, best platform first."""
+    return build_queue(limit=limit, min_score=min_score, include_posted=include_posted).as_dict()
+
+
+@router.post("/clips/{clip_id}/uploaded")
+def mark_clip_uploaded(clip_id: str, request: MarkUploadedRequest | None = None) -> dict:
+    _get_clip_or_404(clip_id)
+    payload = request or MarkUploadedRequest()
+    updated = mark_uploaded(clip_id, url=payload.url, platform=payload.platform)
+    if not updated:
+        raise HTTPException(404, "clip not found")
+    item = queue_item(clip_id)
+    return {"clip": updated, "item": item.as_dict() if item else None}
+
+
+@router.post("/clips/{clip_id}/export")
+def export_clip_bundle(clip_id: str) -> dict:
+    _get_clip_or_404(clip_id)
+    try:
+        return export_bundle(clip_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 # ----------------------------------------------------------------------- live

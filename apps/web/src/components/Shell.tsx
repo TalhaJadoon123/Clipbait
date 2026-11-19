@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 const NAV = [
   { to: "/", label: "Projects", end: true, glyph: "▦" },
   { to: "/new", label: "New clip", glyph: "+" },
+  { to: "/queue", label: "Money queue", glyph: "$" },
   { to: "/live", label: "Live", glyph: "◉" },
   { to: "/insights", label: "Playbooks", glyph: "✦" },
 ];

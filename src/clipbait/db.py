@@ -196,10 +196,16 @@ def insert(table: str, data: dict[str, Any]) -> dict[str, Any]:
 
 def update(table: str, row_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
     payload = _encode(data)
-    payload["updated_at"] = utcnow()
-    assignments = ", ".join(f"{name} = :{name}" for name in payload)
-    payload["_id"] = row_id
     with connect() as conn:
+        # Not every table tracks updated_at (moments and chat_events do not).
+        columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if "updated_at" in columns:
+            payload["updated_at"] = utcnow()
+        if not payload:
+            row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (row_id,)).fetchone()
+            return _decode(row) if row else None
+        assignments = ", ".join(f"{name} = :{name}" for name in payload)
+        payload["_id"] = row_id
         conn.execute(f"UPDATE {table} SET {assignments} WHERE id = :_id", payload)
         row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (row_id,)).fetchone()
     return _decode(row) if row else None
@@ -331,6 +337,23 @@ def list_monitors(limit: int = 50) -> list[dict]:
 
 def update_monitor(monitor_id: str, **fields: Any) -> dict[str, Any] | None:
     return update("monitors", monitor_id, fields)
+
+
+def reconcile_monitors() -> int:
+    """Close monitors whose runner died with the process.
+
+    Runners live in memory, so a restart leaves rows claiming to be ``live``
+    with nothing behind them. Mark them stopped on startup so the UI tells the
+    truth; the moments, chat history and clips stay.
+    """
+    stale = list_rows(
+        "monitors",
+        where="status IN ('starting', 'live')",
+        limit=1000,
+    )
+    for monitor in stale:
+        update_monitor(monitor["id"], status="stopped", stopped_at=utcnow())
+    return len(stale)
 
 
 # -------------------------------------------------------------------- moments

@@ -88,12 +88,12 @@ export function Live() {
     <div className="page">
       <header className="page-head">
         <div>
-          <span className="eyebrow">Live chat clipping</span>
-          <h1>Clip the second chat loses it</h1>
+          <span className="eyebrow">Live clipping</span>
+          <h1>Clip the second it goes viral</h1>
           <p className="page-sub">
-            A rolling recorder keeps the last three minutes on disk. The moment message velocity,
-            unique authors and hype words spike, the pre-roll is already captured — no “clip it”
-            message required.
+            A rolling recorder keeps the last three minutes on disk while two detectors watch the
+            chat and the stream itself. When chat erupts — or he shouts, screams or jumps — the
+            pre-roll is already captured, so the reaction is inside the clip.
           </p>
         </div>
         <button className="btn btn-lime btn-lg" onClick={startDemo} disabled={busy}>
@@ -171,7 +171,7 @@ export function Live() {
           {!monitors.length ? (
             <div className="empty small">
               <h3>No monitors yet</h3>
-              <p>Start the demo to see spike detection, chat capture and automatic clip rendering.</p>
+              <p>Start the demo to see chat + on-stream detection and automatic clip rendering.</p>
             </div>
           ) : null}
           {monitors.map((monitor) => {
@@ -195,7 +195,7 @@ export function Live() {
                       <strong>{(stats.clips as number) ?? 0}</strong> clips
                     </span>
                     <span>
-                      <strong>{typeof monitor.moments === "number" ? monitor.moments : 0}</strong> spikes
+                      <strong>{typeof monitor.moments === "number" ? monitor.moments : 0}</strong> moments
                     </span>
                   </div>
                 </div>
@@ -208,7 +208,8 @@ export function Live() {
       <section className="how">
         {[
           ["Rolling capture", "4-second HLS segments, three-minute ring buffer, pruned as it goes."],
-          ["Explainable spikes", "Median/MAD chat baseline, unique-author surge, hype lexicon, repeats and sentiment."],
+          ["Two detectors", "Chat velocity, plus speech, loudness and scene-change bursts from the stream."],
+          ["Explainable", "Every moment stores why it fired, so the clip copy and the UI can show it."],
           ["Pre-roll first", "The clip starts 25s before the trigger, so the reaction is inside the frame."],
           ["Market packaging", "Every live clip gets region hooks, meme formats and a forecast before it renders."],
         ].map(([title, body]) => (

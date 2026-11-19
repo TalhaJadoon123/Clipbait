@@ -5,6 +5,19 @@ import { api, clipVideoUrl, subscribe } from "../lib/api";
 import { formatTime, relativeTime, statusLabel } from "../lib/format";
 import type { ChatMessage, LiveEvent, Moment, Monitor, MonitorStats } from "../types";
 
+const ORIGIN_LABEL: Record<string, string> = {
+  chat: "chat spike",
+  speech: "what he said",
+  audio: "loud moment",
+  action: "on camera",
+  fused: "chat + stream",
+};
+
+function originLabel(moment: Moment): string {
+  const origin = moment.signal?.origin ?? "chat";
+  return ORIGIN_LABEL[origin] ?? origin;
+}
+
 export function LiveMonitor() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
@@ -41,11 +54,18 @@ export function LiveMonitor() {
       if (event.type === "stats") {
         setStats((current) => ({ ...current, ...(event as unknown as MonitorStats) }));
       }
-      if (event.type === "spike" && event.moment) {
-        setMoments((current) => [event.moment as Moment, ...current.filter((m) => m.id !== event.moment?.id)]);
+      if (["spike", "content", "spike_fused"].includes(event.type) && event.moment) {
+        setMoments((current) => [
+          event.moment as Moment,
+          ...current.filter((m) => m.id !== event.moment?.id),
+        ]);
         load();
       }
-      if (["clip_ready", "clip_queued", "status", "capture_failed", "error"].includes(event.type)) {
+      if (
+        ["clip_ready", "clip_queued", "status", "capture_failed", "capture_skipped", "error"].includes(
+          event.type,
+        )
+      ) {
         if (event.type === "error" && event.error) setError(event.error);
         load();
       }
@@ -164,9 +184,11 @@ export function LiveMonitor() {
           <span className="stat-note">{stats.chat_provider ?? monitor.chat_provider}</span>
         </div>
         <div className="stat">
-          <span className="eyebrow">Spikes</span>
+          <span className="eyebrow">Moments</span>
           <strong>{moments.length}</strong>
-          <span className="stat-note">explainable evidence stored</span>
+          <span className="stat-note">
+            {stats.content_triggers ?? 0} caught on stream
+          </span>
         </div>
         <div className="stat">
           <span className="eyebrow">Clips</span>
@@ -193,7 +215,10 @@ export function LiveMonitor() {
             <span className="mono panel-note">pre-roll {monitor.options?.pre_roll ?? 25}s</span>
           </div>
           {!moments.length ? (
-            <p className="muted-copy">Waiting for chat to lose it. The detector needs a few calm buckets first.</p>
+            <p className="muted-copy">
+              Watching chat and the stream. A line, a scream or a burst of movement triggers a clip
+              before chat has time to react.
+            </p>
           ) : null}
           <ol className="spike-feed">
             {moments.map((moment) => (
@@ -205,7 +230,10 @@ export function LiveMonitor() {
                       {formatTime(moment.start)} → {formatTime(moment.end)}
                     </strong>
                     <span className="mono dim">
-                      {moment.signal?.rate ?? 0}/s · {moment.signal?.rate_z ?? 0}σ
+                      {originLabel(moment)} ·{" "}
+                      {moment.signal?.rate
+                        ? `${moment.signal.rate}/s · ${moment.signal.rate_z ?? 0}σ`
+                        : "on-stream signal"}
                     </span>
                   </div>
                   {moment.clip_id ? (
@@ -216,12 +244,30 @@ export function LiveMonitor() {
                     <span className="mono dim">rendering…</span>
                   )}
                 </div>
-                {moment.signal?.top_messages?.length ? (
-                  <div className="spike-evidence">
-                    {moment.signal.top_messages.slice(0, 4).map((message) => (
-                      <span key={message}>“{message}”</span>
-                    ))}
-                  </div>
+                {moment.signal?.quote ? (
+                  <p className="spike-quote">“{moment.signal.quote}”</p>
+                ) : null}
+                <div className="spike-evidence">
+                  {(moment.signal?.speech ?? 0) > 0 ? (
+                    <span>speech {moment.signal?.speech?.toFixed(1)}</span>
+                  ) : null}
+                  {(moment.signal?.loudness ?? 0) > 0 ? (
+                    <span>loudness {moment.signal?.loudness?.toFixed(1)}</span>
+                  ) : null}
+                  {(moment.signal?.action ?? 0) > 0 ? (
+                    <span>action {moment.signal?.action?.toFixed(1)}</span>
+                  ) : null}
+                  {(moment.signal?.reasons ?? []).slice(0, 3).map((reason) => (
+                    <span key={reason}>{reason}</span>
+                  ))}
+                  {!moment.signal?.rate && !moment.signal?.speech && !moment.signal?.loudness && !moment.signal?.action
+                    ? moment.signal?.top_messages?.slice(0, 4).map((message) => (
+                        <span key={message}>“{message}”</span>
+                      ))
+                    : null}
+                </div>
+                {moment.signal?.capture_error ? (
+                  <p className="spike-quote">Missed: {moment.signal.capture_error}</p>
                 ) : null}
               </li>
             ))}

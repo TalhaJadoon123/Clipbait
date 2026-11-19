@@ -467,3 +467,82 @@ def test_spa_fallback_serves_built_assets(monkeypatch, tmp_path):
         assert "console.log" in asset.text
 
         assert spa_client.get("/api/v1/does-not-exist").status_code == 404
+
+
+# ---------------------------------------------------------------------- money
+
+
+def _ready_money_clip(score: int = 78) -> dict:
+    project = make_project(title="Money API")
+    clip = make_clip(
+        project["id"],
+        title="Money clip",
+        hook="Money hook",
+        hashtags=["#cash"],
+        start=10.0,
+        end=48.0,
+        score=score,
+        status="ready",
+        meta={"region": "US", "platform": "tiktok", "forecast": {"overall": score}},
+    )
+    path = storage.project_dir(project["id"]) / "clips" / f"{clip['id']}.mp4"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\x00" * 2048)
+    return db.update("clips", clip["id"], {"render_path": storage.relative(path)}) or clip
+
+
+def test_meta_advertises_money_and_content_detection(client):
+    payload = client.get(f"{API}/meta").json()
+    assert payload["content_detection"]["signals"] == ["speech", "audio", "action"]
+    assert "tiktok" in payload["money"]["platforms"]
+    assert payload["money"]["platforms"]["tiktok"]["rpm"] > 0
+
+
+def test_queue_endpoint_ranks_ready_clips(client):
+    clip = _ready_money_clip(score=84)
+    response = client.get(f"{API}/queue")
+    assert response.status_code == 200
+    payload = response.json()
+    ids = [item["clip_id"] for item in payload["items"]]
+    assert clip["id"] in ids
+    item = next(entry for entry in payload["items"] if entry["clip_id"] == clip["id"])
+    assert item["expected_usd"] > 0
+    assert item["usd_low"] <= item["expected_usd"] <= item["usd_high"]
+    assert item["copy"]["hashtags"] == "#cash"
+    assert payload["total_expected_usd"] >= item["expected_usd"]
+
+
+def test_queue_min_score_filters(client):
+    clip = _ready_money_clip(score=31)
+    payload = client.get(f"{API}/queue", params={"min_score": 70}).json()
+    assert all(item["score"] >= 70 for item in payload["items"])
+    assert clip["id"] not in [item["clip_id"] for item in payload["items"]]
+
+
+def test_export_bundle_endpoint(client):
+    clip = _ready_money_clip(score=80)
+    assert client.post(f"{API}/clips/clip_nope/export").status_code == 404
+
+    response = client.post(f"{API}/clips/{clip['id']}/export")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["clip_id"] == clip["id"]
+    assert "clip.mp4" in payload["files"]
+    assert storage.resolve(payload["dir"]).exists()
+
+
+def test_mark_uploaded_endpoint_removes_from_queue(client):
+    clip = _ready_money_clip(score=66)
+    response = client.post(
+        f"{API}/clips/{clip['id']}/uploaded",
+        json={"url": "https://tiktok.com/@me/video/1", "platform": "tiktok"},
+    )
+    assert response.status_code == 200
+    assert response.json()["item"]["posted"] is True
+
+    default_ids = [item["clip_id"] for item in client.get(f"{API}/queue").json()["items"]]
+    assert clip["id"] not in default_ids
+    included = client.get(f"{API}/queue", params={"include_posted": "true"}).json()["items"]
+    assert clip["id"] in [item["clip_id"] for item in included]
+
+    assert client.post(f"{API}/clips/clip_nope/uploaded", json={}).status_code == 404
