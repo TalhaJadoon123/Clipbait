@@ -115,8 +115,8 @@ export function Live() {
               placeholder="https://www.youtube.com/watch?v=… or https://www.twitch.tv/channel"
             />
             <small>
-              YouTube chat: {caps.pytchat ? "pytchat ready" : "install clipbait[live] or set YOUTUBE_API_KEY"}.
-              Twitch chat is keyless.
+              YouTube chat: {caps.pytchat ? "pytchat ready" : "keyless InnerTube reader"}.
+              {caps.live_chat === "data-api" ? " Data API key detected." : ""} Twitch chat is keyless.
             </small>
           </label>
           <label className="field">

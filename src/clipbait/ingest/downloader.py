@@ -240,6 +240,112 @@ def fetch_remote(
     )
 
 
+def fetch_audio(
+    url: str, project_id: str, on_progress: ProgressFn | None = None
+) -> IngestResult:
+    """Download only the audio track, for link mode.
+
+    This is what makes "no full download" possible: a two-hour 1080p talk is
+    gigabytes, while its audio is tens of megabytes. The video itself is fetched
+    later, one short section per kept clip, in :func:`fetch_section`.
+    """
+    ensure_safe_url(url)
+    target_dir = storage.project_dir(project_id) / "source"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    template = target_dir / "link_audio.%(ext)s"
+    cmd = [
+        *_ytdlp_base(),
+        "-f",
+        "bestaudio/best",
+        "--extract-audio",
+        "--audio-format",
+        "m4a",
+        "--audio-quality",
+        "5",
+        "--write-info-json",
+        "-o",
+        str(template),
+        url,
+    ]
+    _run_ytdlp(cmd, on_progress)
+
+    audio = storage.link_audio_path(project_id)
+    if not (audio.exists() and audio.stat().st_size > 0):
+        produced = next(
+            (
+                path
+                for path in sorted(target_dir.glob("link_audio.*"))
+                if path.suffix in {".m4a", ".mp3", ".aac", ".ogg", ".opus", ".wav", ".webm"}
+            ),
+            None,
+        )
+        if not produced:
+            raise media.MediaError("audio download finished but produced no audio file")
+        produced.replace(audio)
+
+    title = "Untitled"
+    duration = 0.0
+    info_file = target_dir / "link_audio.info.json"
+    if info_file.exists():
+        try:
+            payload = json.loads(info_file.read_text(encoding="utf-8"))
+            title = payload.get("title") or title
+            duration = float(payload.get("duration") or 0)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+    if not duration:
+        duration = media.probe(audio).duration
+    if on_progress:
+        on_progress(1.0, "Audio ready")
+    return IngestResult(
+        path=audio,
+        title=title,
+        duration=duration,
+        source_kind=source_kind_for(url),
+        webpage_url=url,
+    )
+
+
+def fetch_section(
+    url: str,
+    start: float,
+    end: float,
+    target: Path,
+    *,
+    on_progress: ProgressFn | None = None,
+) -> Path:
+    """Download one ``[start, end]`` window of a remote video.
+
+    yt-dlp's ``--download-sections`` uses the platform's range/segment support,
+    so a 40-second clip out of a two-hour stream costs roughly 40 seconds of
+    transfer instead of two hours. Formats are merged to mp4 so the renderer
+    gets the same shape as a full download.
+    """
+    ensure_safe_url(url)
+    start = max(0.0, float(start))
+    end = max(start + 0.5, float(end))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        *_ytdlp_base(),
+        "-f",
+        "bv*[height<=1080]+ba/b[height<=1080]/b",
+        "--download-sections",
+        f"*{start:.3f}-{end:.3f}",
+        "--force-keyframes-at-cuts",
+        "--merge-output-format",
+        "mp4",
+        "-o",
+        str(target),
+        url,
+    ]
+    _run_ytdlp(cmd, on_progress)
+    if not target.exists() or target.stat().st_size == 0:
+        raise media.MediaError("section download produced no file")
+    if on_progress:
+        on_progress(1.0, "Section ready")
+    return target
+
+
 def _cleanup_sidecars(directory: Path) -> None:
     for path in directory.glob("video.*"):
         if path.suffix in {".part", ".ytdl", ".temp"}:

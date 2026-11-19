@@ -134,6 +134,7 @@ export function ProjectDetail() {
         <span>{options?.reframe_mode ?? "auto"}</span>
         <span>{options?.clips ?? clips.length} clips</span>
         {options?.memes ? <span>meme packaging</span> : null}
+        {project.source_url && options?.source_mode !== "download" ? <span>link mode</span> : null}
       </div>
 
       {running && job ? (

@@ -23,7 +23,7 @@ from .memes import (
 )
 from .reframe import ReframePlan, plan_reframe
 from .render import render_clip
-from .schema import ChatMessage, Highlight, ProjectOptions, Transcript
+from .schema import ChatMessage, Highlight, ProjectOptions, Transcript, Word
 from .virality import build_variants, forecast, get_region
 
 log = logging.getLogger("clipbait.pipeline")
@@ -37,8 +37,23 @@ def _set_status(project_id: str, status: str, **fields) -> None:
     db.update("projects", project_id, {"status": status, **fields})
 
 
+def _link_mode(project: dict, options: ProjectOptions) -> bool:
+    """True when the video itself should never be downloaded whole."""
+    return (
+        options.source_mode != "download"
+        and bool(project.get("source_url"))
+        and project.get("source_kind") != "local"
+        and not project.get("source_path")
+    )
+
+
 def ensure_source(project: dict, job_id: str | None, progress_base: float = 0.0) -> dict:
-    """Download or copy the source if it is not already on disk."""
+    """Make the source available.
+
+    In link mode only the audio track is fetched here; the video is cut straight
+    from the remote source per clip. If that path is unavailable (or the site
+    cannot serve sections), it degrades to a normal full download.
+    """
     project_id = project["id"]
     existing = project.get("source_path")
     if existing:
@@ -49,12 +64,41 @@ def ensure_source(project: dict, job_id: str | None, progress_base: float = 0.0)
     if not project.get("source_url"):
         raise media.MediaError("project has no source URL or file")
 
-    jobs.progress(job_id, progress_base + 0.02, "downloading", "Fetching source video")
-    _set_status(project_id, "downloading")
-
     def on_download(fraction: float, message: str) -> None:
         # Live download feedback: the ingest step owns 2% -> 9% of the run.
         jobs.progress(job_id, progress_base + 0.02 + 0.07 * fraction, "downloading", message)
+
+    options = _project_options(project)
+    if _link_mode(project, options):
+        cached_audio = storage.link_audio_path(project_id)
+        if cached_audio.exists() and cached_audio.stat().st_size > 0:
+            # A retry reuses the audio-only download instead of paying for it twice.
+            return project
+        jobs.progress(
+            job_id, progress_base + 0.02, "downloading", "Fetching audio only (link mode)"
+        )
+        _set_status(project_id, "downloading")
+        try:
+            from .ingest import fetch_audio
+
+            result = fetch_audio(project["source_url"], project_id, on_progress=on_download)
+        except Exception as exc:  # noqa: BLE001 - fall back to the full video
+            log.warning("link mode unavailable (%s); downloading the full source", exc)
+        else:
+            updated = db.update(
+                "projects",
+                project_id,
+                {
+                    "title": result.title or project["title"],
+                    "duration": result.duration,
+                    "language": project.get("language"),
+                    "error": None,
+                },
+            )
+            return updated or project
+
+    jobs.progress(job_id, progress_base + 0.02, "downloading", "Fetching source video")
+    _set_status(project_id, "downloading")
 
     result = ingest_source(project, job_id, on_progress=on_download)
     updated = db.update(
@@ -101,11 +145,18 @@ def process_project(project_id: str, job_id: str | None = None) -> dict:
     settings = get_settings()
     project = ensure_source(project, job_id)
 
-    source = storage.resolve(project["source_path"]) if project.get("source_path") else None
-    if not source or not source.exists():
-        raise media.MediaError("source file missing after ingest")
-
-    info = media.probe(source)
+    link = _link_mode(project, options)
+    if link:
+        audio_input = storage.link_audio_path(project_id)
+        if not audio_input.exists():
+            raise media.MediaError("link-mode audio missing after ingest")
+        info = media.probe(audio_input)
+    else:
+        source = storage.resolve(project["source_path"]) if project.get("source_path") else None
+        if not source or not source.exists():
+            raise media.MediaError("source file missing after ingest")
+        audio_input = source
+        info = media.probe(source)
     db.update(
         "projects",
         project_id,
@@ -113,7 +164,7 @@ def process_project(project_id: str, job_id: str | None = None) -> dict:
     )
 
     jobs.progress(job_id, 0.1, "audio", "Extracting audio")
-    audio = media.extract_audio(source, storage.audio_path(project_id))
+    audio = media.extract_audio(audio_input, storage.audio_path(project_id))
 
     transcript = _load_transcript(project_id) if info.duration > 0 else None
     if transcript is None:
@@ -324,6 +375,55 @@ def _clip_inserts(
     return inserts, records
 
 
+def _download_full(project: dict) -> dict:
+    """Force the classic whole-file ingest (link-mode fallback)."""
+    result = ingest_source(project, None)
+    updated = db.update(
+        "projects",
+        project["id"],
+        {
+            "title": result.title or project["title"],
+            "duration": result.duration,
+            "source_path": storage.relative(result.path),
+        },
+    )
+    return updated or project
+
+
+def _fetch_clip_window(project: dict, clip: dict, on_progress=None) -> tuple[Path, float, bool]:
+    """Fetch just this clip's section, falling back to a full download once.
+
+    Returns ``(path, offset, used_link)``. ``offset`` is the clip start inside
+    the fetched window (``0`` when the whole file was downloaded), and
+    ``used_link`` says whether the result really is a short window.
+    """
+    from .ingest import fetch_section
+
+    target = storage.clip_window_path(project["id"], clip["id"])
+    try:
+        if on_progress:
+            on_progress(0.01, "Fetching this moment only")
+        path = fetch_section(
+            project["source_url"],
+            clip["start"],
+            clip["end"],
+            target,
+            on_progress=(
+                (lambda fraction, message: on_progress(0.01 + 0.08 * fraction, message))
+                if on_progress
+                else None
+            ),
+        )
+        return path, float(clip["start"]), True
+    except Exception as exc:  # noqa: BLE001 - degrade to the reliable path
+        log.warning("section fetch failed (%s); downloading the full source", exc)
+        updated = _download_full(project)
+        path = updated.get("source_path")
+        if not path:
+            raise media.MediaError("could not fetch the section or the full source") from exc
+        return storage.resolve(path), 0.0, False
+
+
 def render_clip_record(
     clip_id: str,
     *,
@@ -334,9 +434,20 @@ def render_clip_record(
     if not clip:
         raise ValueError(f"unknown clip {clip_id}")
     project = db.get_project(clip["project_id"])
-    if not project or not project.get("source_path"):
+    if not project:
         raise ValueError("project source missing")
-    source = storage.resolve(project["source_path"])
+    options = _project_options(project)
+
+    offset = 0.0
+    link = _link_mode(project, options)
+    if link:
+        source, offset, link = _fetch_clip_window(project, clip, on_progress=on_progress)
+    else:
+        if not project.get("source_path"):
+            raise ValueError("project source missing")
+        source = storage.resolve(project["source_path"])
+        if not source.exists():
+            raise ValueError("project source missing")
     if transcript is None:
         transcript = _load_transcript(clip["project_id"])
     if transcript is None:
@@ -345,17 +456,30 @@ def render_clip_record(
     db.update("clips", clip_id, {"status": "rendering"})
     meta = clip.get("meta") or {}
     source_info = media.probe(source)
+    local_start = max(0.0, float(clip["start"]) - offset)
+    local_end = max(local_start + 0.2, float(clip["end"]) - offset)
     plan = plan_reframe(
         source,
-        clip["start"],
-        clip["end"],
+        local_start,
+        local_end,
         source_w=source_info.width,
         source_h=source_info.height,
         mode=clip.get("reframe_mode", "auto"),
     )
+    words = transcript.words
+    if offset:
+        words = [
+            Word(text=word.text, start=word.start - offset, end=word.end - offset, prob=word.prob)
+            for word in transcript.words
+        ]
     chat = None
     if meta.get("chat"):
         chat = [ChatMessage(**message) for message in meta["chat"]]
+        if offset:
+            chat = [
+                ChatMessage(t=message.t - offset, author=message.author, text=message.text, kind=message.kind)
+                for message in chat
+            ]
 
     preset = get_preset(clip.get("caption_preset", "default"))
     out_path = storage.clip_dir(clip["project_id"], clip_id) / "clip.mp4"
@@ -365,10 +489,10 @@ def render_clip_record(
     result = render_clip(
         source,
         out_path,
-        clip["start"],
-        clip["end"],
+        local_start,
+        local_end,
         plan,
-        words=transcript.words,
+        words=words,
         caption_preset=clip.get("caption_preset", "default"),
         captions=bool(clip.get("captions", True)),
         hook=(clip.get("hook") or clip.get("title")) if clip.get("hook_titles", True) else None,
@@ -392,6 +516,7 @@ def render_clip_record(
                 "caption_style": preset.font,
                 "inserts": insert_records,
                 "insert_count": len(inserts),
+                "link_mode": link,
                 "error": None,
             },
         },

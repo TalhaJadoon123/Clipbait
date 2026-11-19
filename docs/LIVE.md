@@ -137,6 +137,8 @@ restarted monitor does not inherit stale elapsed time.
 | URL | Transport | Key | Notes |
 |---|---|---|---|
 | `https://youtube.com/watch?v=…`, `/live/…`, `youtu.be/…` | `pytchat` | none | `pip install 'clipbait[live]'` |
+| same | `pytchat` (optional) | none | used when the extra is installed |
+| same | InnerTube (`innertube`) | none | keyless default when pytchat is absent; reads the public web chat endpoint |
 | same | YouTube Data API | `YOUTUBE_API_KEY` | used when `chat_provider=api`, or as `auto` fallback if pytchat is missing and a key exists |
 | `https://twitch.tv/<channel>` | anonymous IRC over TLS | none | `PASS oauth:anonymous`, PING/PONG handled |
 | `demo://live` or `demo` | synthetic | none | deterministic spikes at ~20 s, 75 s, 130 s |
@@ -245,7 +247,9 @@ outlier.
 
 | Error | Cause | Fix |
 |---|---|---|
-| `pytchat is not installed` | optional extra missing | `pip install 'clipbait[live]'` or set `YOUTUBE_API_KEY` and `chat_provider=api` |
+| `pytchat is not installed` | forcing `chat_provider=pytchat` without the extra | `pip install 'clipbait[live]'`, or use `auto` / `innertube` |
+| `this YouTube video has no readable live chat` | stream ended, chat disabled, or the page changed | verify the stream is live and public; set `YOUTUBE_API_KEY` for the official API path |
+| `could not resolve the live stream URL ...` | yt-dlp could not see a live format | confirm the stream is live and public; the message includes yt-dlp's reason |
 | `this video has no active live chat` | stream ended or chat disabled | verify the stream is live |
 | `cannot extract a YouTube video id` | URL form not recognised | use a canonical watch/live URL |
 | `requested range is older than the ring buffer` | capture lagged past the buffer | raise `CLIPBAIT_LIVE_BUFFER_SECONDS` or reduce pre-roll |

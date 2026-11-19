@@ -28,6 +28,7 @@ export function NewClip() {
   const [memes, setMemes] = useState(true);
   const [mediumRisk, setMediumRisk] = useState(false);
   const [memeInserts, setMemeInserts] = useState(false);
+  const [sourceMode, setSourceMode] = useState<"auto" | "download">("auto");
   const [llm, setLlm] = useState(true);
   const [variants, setVariants] = useState(4);
   const [busy, setBusy] = useState(false);
@@ -85,6 +86,7 @@ export function NewClip() {
       hook_titles: true,
       language: "auto",
       aspect: "9:16",
+      source_mode: mode === "url" ? sourceMode : "download",
     };
     setBusy(true);
     try {
@@ -139,6 +141,7 @@ export function NewClip() {
           </div>
 
           {mode === "url" ? (
+            <>
             <label className="field">
               <span>Video URL</span>
               <input
@@ -149,6 +152,21 @@ export function NewClip() {
               />
               <small>YouTube, Twitch VODs, Vimeo and direct video links. Live streams go under “Live”.</small>
             </label>
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={sourceMode === "auto"}
+                onChange={(event) => setSourceMode(event.target.checked ? "auto" : "download")}
+              />
+              <span>
+                <strong>Link mode — don’t download the whole video</strong>
+                <small>
+                  Fetches only the audio for transcription, then just the seconds behind each clip.
+                  Falls back to a full download automatically if the site can’t serve sections.
+                </small>
+              </span>
+            </label>
+            </>
           ) : (
             <label className="dropzone">
               <input

@@ -13,6 +13,7 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from helpers import make_video
 
@@ -145,6 +146,7 @@ def test_resolve_chat_source_kinds(monkeypatch):
     assert isinstance(
         chat.resolve_chat_source("https://twitch.tv/someone"), chat.TwitchChatSource
     )
+    monkeypatch.setattr(chat, "_module", lambda _name: True)
     assert isinstance(
         chat.resolve_chat_source("https://youtube.com/watch?v=abcdefghijk"),
         chat.YouTubeChatSource,
@@ -155,13 +157,22 @@ def test_resolve_chat_source_kinds(monkeypatch):
         ),
         chat.YouTubeApiChatSource,
     )
+    # Keyless fallback: no pytchat, no API key still reads YouTube chat.
     monkeypatch.setattr(chat, "_module", lambda _name: False)
+    assert isinstance(
+        chat.resolve_chat_source("https://youtube.com/watch?v=abcdefghijk"),
+        chat.YouTubeInnerTubeChatSource,
+    )
     assert isinstance(
         chat.resolve_chat_source(
             "https://youtube.com/watch?v=abcdefghijk", provider="auto", api_key="k"
         ),
         chat.YouTubeApiChatSource,
     )
+    with pytest.raises(chat.ChatError, match="YOUTUBE_API_KEY"):
+        chat.resolve_chat_source(
+            "https://youtube.com/watch?v=abcdefghijk", provider="api", api_key=None
+        )
     with pytest.raises(chat.ChatError):
         chat.resolve_chat_source("https://example.com/stream")
 
@@ -420,6 +431,143 @@ def test_resolve_live_stream(monkeypatch):
         recorder.resolve_live_stream("https://twitch.tv/x")
 
 
+def test_resolve_live_streams_selects_video_and_audio(monkeypatch):
+    captured: dict = {}
+
+    def fake_run(cmd, **_kwargs):
+        captured["cmd"] = cmd
+        return SimpleNamespace(
+            stdout="https://cdn/video.m3u8\nhttps://cdn/audio.m3u8\n", stderr=""
+        )
+
+    monkeypatch.setattr(recorder.media, "run", fake_run)
+    streams = recorder.resolve_live_streams("https://youtube.com/watch?v=x")
+    assert streams == ["https://cdn/video.m3u8", "https://cdn/audio.m3u8"]
+    # YouTube live HLS is video-only + audio-only: the selector must merge both.
+    selector = captured["cmd"][captured["cmd"].index("-f") + 1]
+    assert "bv*" in selector and "+ba" in selector
+
+
+def test_resolve_live_streams_reports_the_ytdlp_reason(monkeypatch):
+    monkeypatch.setattr(
+        recorder.media,
+        "run",
+        lambda *a, **k: SimpleNamespace(
+            stdout="", stderr="ERROR: Requested format is not available"
+        ),
+    )
+    with pytest.raises(recorder.RecorderError, match="Requested format is not available"):
+        recorder.resolve_live_streams("https://youtube.com/watch?v=x")
+
+
+def test_innertube_token_and_messages(monkeypatch):
+    html = """<script>var ytInitialData = {"a": {"liveChatRenderer": {"continuations":
+      [{"reloadContinuationData": {"continuation": "TOKEN123"}}]}}};</script>"""
+    assert chat.YouTubeInnerTubeChatSource._token_from_page(html) == "TOKEN123"
+    assert chat.YouTubeInnerTubeChatSource._token_from_page("<html>no chat</html>") is None
+
+    source = chat.YouTubeInnerTubeChatSource("https://youtu.be/abcdefghijk")
+    payload = {
+        "continuationContents": {
+            "liveChatContinuation": {
+                "actions": [
+                    {
+                        "addChatItemAction": {
+                            "item": {
+                                "liveChatTextMessageRenderer": {
+                                    "message": {"runs": [{"text": "hello "}, {"text": "chat"}]},
+                                    "authorName": {"simpleText": "bob"},
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "addChatItemAction": {
+                            "item": {
+                                "liveChatPaidMessageRenderer": {
+                                    "message": {"simpleText": "tip"},
+                                    "authorName": {"runs": [{"text": "ann"}]},
+                                }
+                            }
+                        }
+                    },
+                    {"addChatItemAction": {"item": {"liveChatViewerEngagementMessageRenderer": {}}}},
+                ],
+                "continuations": [
+                    {"invalidationContinuationData": {"continuation": "NEXT", "timeoutMs": 3000}}
+                ],
+            }
+        }
+    }
+    messages = source._messages_from(payload)
+    assert [m.text for m in messages] == ["hello chat", "tip"]
+    assert messages[0].author == "bob"
+    assert messages[1].kind == "superchat"
+    assert source._advance(payload) == 3.0
+    assert source._continuation == "NEXT"
+
+
+def test_innertube_bootstrap_and_stream(monkeypatch):
+    source = chat.YouTubeInnerTubeChatSource("https://youtu.be/abcdefghijk")
+
+    class Response:
+        status_code = 200
+        text = '"liveChatRenderer": {"continuationCommand": {"token": "T"}}'
+
+        def json(self):
+            return {"continuationContents": {"liveChatContinuation": {"actions": []}}}
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: Response())
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: Response())
+    payload = source._poll()
+    assert payload["continuationContents"] == {"liveChatContinuation": {"actions": []}}
+    assert source._continuation == "T"
+
+    def broken(*_a, **_k):
+        return SimpleNamespace(status_code=200, text="nothing", json=lambda: {})
+
+    monkeypatch.setattr(httpx, "get", broken)
+    with pytest.raises(chat.ChatError, match="no readable live chat"):
+        chat.YouTubeInnerTubeChatSource("https://youtu.be/abcdefghijk")._bootstrap()
+
+
+def test_hls_start_maps_video_and_audio(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        recorder,
+        "resolve_live_streams",
+        lambda _url: ["https://cdn/v.m3u8", "https://cdn/a.m3u8"],
+    )
+
+    class Proc:
+        def __init__(self, cmd, **_kwargs):
+            self.cmd = cmd
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            return None
+
+    procs: list[Proc] = []
+
+    def fake_popen(cmd, **kwargs):
+        proc = Proc(cmd, **kwargs)
+        procs.append(proc)
+        return proc
+
+    monkeypatch.setattr(recorder.subprocess, "Popen", fake_popen)
+    rec = recorder.HlsRecorder("https://youtube.com/watch?v=x", tmp_path)
+    rec.start()
+    cmd = procs[0].cmd
+    assert cmd.count("-i") == 2
+    assert "0:v:0" in cmd and "1:a:0?" in cmd
+    assert cmd[cmd.index("-i") + 1] == "https://cdn/v.m3u8"
+    rec.stop()
+
+
 def test_hls_watch_and_prune(monkeypatch, tmp_path):
     rec = recorder.HlsRecorder("https://twitch.tv/x", tmp_path, segment_seconds=4)
     (tmp_path / "seg_000000.ts").write_bytes(b"a")
@@ -474,7 +622,7 @@ def test_hls_slice(monkeypatch, tmp_path):
 
 
 def test_hls_start_and_stop(monkeypatch, tmp_path):
-    monkeypatch.setattr(recorder, "resolve_live_stream", lambda _url: "https://cdn/x.m3u8")
+    monkeypatch.setattr(recorder, "resolve_live_streams", lambda _url: ["https://cdn/x.m3u8"])
     monkeypatch.setattr("clipbait.live.recorder.time.sleep", lambda *_: None)
 
     class Proc:

@@ -117,6 +117,7 @@ export interface ProjectOptions {
   meme_inserts: boolean;
   meme_insert_seconds?: number;
   meme_max_inserts?: number;
+  source_mode?: "auto" | "download";
 }
 
 export interface Project {

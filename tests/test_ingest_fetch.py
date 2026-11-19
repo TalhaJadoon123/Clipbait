@@ -24,7 +24,9 @@ from clipbait.ingest.downloader import (
     _download_message,
     _link,
     _ytdlp_base,
+    fetch_audio,
     fetch_remote,
+    fetch_section,
     ingest_local,
     probe_url,
     source_kind_for,
@@ -234,6 +236,112 @@ def test_fetch_remote_without_a_progress_callback(tmp_path, remote_project, monk
     monkeypatch.setattr(downloader, "get_settings", lambda: settings)
     result = fetch_remote("https://example.com/v.mp4", remote_project["id"])
     assert result.path.exists()
+
+
+# --------------------------------------------------------------------- fetch_audio
+
+FAKE_AUDIO_YTDLP = """#!/bin/sh
+out=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-o" ]; then out="$arg"; fi
+  prev="$arg"
+done
+dir=$(dirname "$out")
+echo "[info] abc: Downloading 1 format(s): 251"
+echo "[download] 100.0% of   2.00MiB at  1.00MiB/s ETA 00:00"
+printf 'fake-audio-bytes' > "$dir/link_audio.m4a"
+printf '%s' '{"title":"Audio Title","duration":42.5}' > "$dir/link_audio.info.json"
+exit 0
+"""
+
+
+def test_fetch_audio_downloads_only_audio(tmp_path, remote_project, monkeypatch):
+    monkeypatch.setattr(downloader, "ensure_safe_url", lambda url: url)
+    settings = dataclasses.replace(
+        get_settings(), ytdlp=str(fake_ytdlp(tmp_path, FAKE_AUDIO_YTDLP))
+    )
+    monkeypatch.setattr(downloader, "get_settings", lambda: settings)
+
+    updates: list[tuple[float, str]] = []
+    result = fetch_audio(
+        "https://www.youtube.com/watch?v=abc",
+        remote_project["id"],
+        on_progress=lambda fraction, message: updates.append((fraction, message)),
+    )
+
+    audio = storage.link_audio_path(remote_project["id"])
+    assert result.path == audio
+    assert audio.read_bytes() == b"fake-audio-bytes"
+    assert result.title == "Audio Title"
+    assert result.duration == 42.5
+    # The whole point of link mode: no video file is created.
+    assert not storage.source_path(remote_project["id"]).exists()
+    assert updates[-1] == (1.0, "Audio ready")
+
+
+def test_fetch_audio_renames_a_different_extension(tmp_path, remote_project, monkeypatch):
+    body = FAKE_AUDIO_YTDLP.replace('link_audio.m4a"', 'link_audio.opus"')
+    monkeypatch.setattr(downloader, "ensure_safe_url", lambda url: url)
+    settings = dataclasses.replace(get_settings(), ytdlp=str(fake_ytdlp(tmp_path, body)))
+    monkeypatch.setattr(downloader, "get_settings", lambda: settings)
+    monkeypatch.setattr(downloader.media, "probe", lambda path: SimpleNamespace(duration=5.0))
+
+    result = fetch_audio("https://example.com/v", remote_project["id"])
+    assert result.path.name == "link_audio.m4a"
+    assert result.path.read_bytes() == b"fake-audio-bytes"
+    assert result.duration == 42.5
+
+
+def test_fetch_audio_reports_no_audio(tmp_path, remote_project, monkeypatch):
+    monkeypatch.setattr(downloader, "ensure_safe_url", lambda url: url)
+    settings = dataclasses.replace(
+        get_settings(), ytdlp=str(fake_ytdlp(tmp_path, "#!/bin/sh\nexit 0\n"))
+    )
+    monkeypatch.setattr(downloader, "get_settings", lambda: settings)
+
+    with pytest.raises(media.MediaError, match="no audio file"):
+        fetch_audio("https://example.com/v", remote_project["id"])
+
+
+# ------------------------------------------------------------------- fetch_section
+
+FAKE_SECTION_YTDLP = """#!/bin/sh
+out=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-o" ]; then out="$arg"; fi
+  prev="$arg"
+done
+printf 'section-bytes' > "$out"
+exit 0
+"""
+
+
+def test_fetch_section_requests_only_the_window(tmp_path, remote_project, monkeypatch):
+    monkeypatch.setattr(downloader, "ensure_safe_url", lambda url: url)
+    settings = dataclasses.replace(
+        get_settings(), ytdlp=str(fake_ytdlp(tmp_path, FAKE_SECTION_YTDLP))
+    )
+    monkeypatch.setattr(downloader, "get_settings", lambda: settings)
+
+    target = storage.clip_window_path(remote_project["id"], "clip_test")
+    result = fetch_section("https://example.com/v", 12.0, 41.5, target)
+    assert result == target
+    assert target.read_bytes() == b"section-bytes"
+
+
+def test_fetch_section_reports_no_output(tmp_path, remote_project, monkeypatch):
+    monkeypatch.setattr(downloader, "ensure_safe_url", lambda url: url)
+    settings = dataclasses.replace(
+        get_settings(), ytdlp=str(fake_ytdlp(tmp_path, "#!/bin/sh\nexit 0\n"))
+    )
+    monkeypatch.setattr(downloader, "get_settings", lambda: settings)
+
+    with pytest.raises(media.MediaError, match="no file"):
+        fetch_section(
+            "https://example.com/v", 1, 2, storage.clip_window_path("prj_x", "clip_y")
+        )
 
 
 # --------------------------------------------------------------------- probe_url

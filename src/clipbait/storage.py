@@ -69,6 +69,16 @@ def audio_path(project_id: str) -> Path:
     return project_dir(project_id) / "source" / "audio.wav"
 
 
+def link_audio_path(project_id: str) -> Path:
+    """Audio-only download used by link mode (the video is never fetched whole)."""
+    return project_dir(project_id) / "source" / "link_audio.m4a"
+
+
+def clip_window_path(project_id: str, clip_id: str) -> Path:
+    """The fetched section that backs one clip in link mode."""
+    return clip_dir(project_id, clip_id) / "window.mp4"
+
+
 def clip_dir(project_id: str, clip_id: str) -> Path:
     path = project_dir(project_id) / "clips" / clip_id
     path.mkdir(parents=True, exist_ok=True)

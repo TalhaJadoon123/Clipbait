@@ -43,22 +43,84 @@ Per-project knobs (`ProjectOptions`): `meme_inserts`, `meme_insert_seconds`
 
 ## Where the video comes from
 
-`src/clipbait/memes/providers.py` has two providers behind one interface:
+`src/clipbait/memes/providers.py` has three providers behind one interface:
 
 | Provider | Selected when | What it does |
 |---|---|---|
-| `ApiMemeProvider` | `CLIPBAIT_MEME_API_URL` is set (or provider `api`) | POSTs a prompt to a hosted text-to-video endpoint and downloads the result |
-| `FixtureMemeProvider` | no API URL (or provider `fixture`) | Renders a labelled placeholder card locally with ffmpeg |
+| `HttpMemeProvider` (`search`) | `CLIPBAIT_MEME_SEARCH_URL` is set (or provider `search`) | Searches a meme library you already have access to and downloads a matching video |
+| `ApiMemeProvider` (`api`) | `CLIPBAIT_MEME_API_URL` is set (or provider `api`) | POSTs a prompt to a hosted text-to-video endpoint and downloads the result |
+| `FixtureMemeProvider` (`fixture`) | nothing configured (or provider `fixture`) | Renders a labelled placeholder card locally with ffmpeg |
 
-`CLIPBAIT_MEME_PROVIDER=none` disables inserts entirely. The API client is
-deliberately forgiving because provider schemas differ: it accepts a
-synchronous body containing a URL, or an id it polls at `<url>/<id>`, and it
-treats any failure as "no insert". Downloaded URLs pass the same SSRF guard as
-any other user-supplied URL, and there is a hard 120 MB ceiling on an asset.
+`CLIPBAIT_MEME_PROVIDER=none` disables inserts entirely. `auto` prefers a real
+meme library, then generation, then the local fixture.
+
+The clients are deliberately forgiving because provider schemas differ. Search
+results are read through configurable dot paths, and candidates are tried in
+order, so an image-only result or a dead CDN falls through to the next video. A
+generation response may be synchronous (a URL in the body) or asynchronous (an
+id polled at `<url>/<id>`). Every failure becomes "no insert". Downloaded URLs
+pass the same SSRF guard as any other user-supplied URL, and there is a hard
+120 MB ceiling on an asset.
 
 The fixture provider exists for exactly the reason the mock transcriber does: the
 feature should be usable and testable with **no API key at all**. It always
 renders a clearly synthetic card.
+
+## Search API contract
+
+Any JSON search endpoint works — Giphy, Tenor, or your own catalogue. Point
+`CLIPBAIT_MEME_SEARCH_URL` at it and describe the response shape:
+
+```bash
+CLIPBAIT_MEME_SEARCH_URL="https://api.example.com/v1/memes/search"
+CLIPBAIT_MEME_SEARCH_KEY="..."             # optional
+CLIPBAIT_MEME_SEARCH_AUTH="bearer"         # bearer | header | query | none
+CLIPBAIT_MEME_SEARCH_RESULTS="results"     # dot path to the result list
+CLIPBAIT_MEME_SEARCH_VIDEO="url"           # dot path to a video URL per result
+```
+
+The request is `GET <url>?q=<query>&limit=8` (the query is the insert prompt,
+reduced to its strongest keywords). Auth styles:
+
+| `CLIPBAIT_MEME_SEARCH_AUTH` | What is sent |
+|---|---|
+| `bearer` (default) | `Authorization: Bearer <key>` |
+| `header` | `<CLIPBAIT_MEME_SEARCH_HEADER>: <key>` |
+| `query` | `<CLIPBAIT_MEME_SEARCH_KEY_PARAM>=<key>` in the query string |
+| `none` | nothing |
+
+If the URL contains `{query}`, the query is substituted there instead of in the
+`q` parameter.
+
+Expected response (dot paths above resolve to the list and to each video URL):
+
+```json
+{
+  "results": [
+    {"id": "abc", "url": "https://cdn.example.com/abc.mp4", "title": "shocked"},
+    {"id": "def", "url": "https://cdn.example.com/def.mp4", "title": "no way"}
+  ]
+}
+```
+
+Nested shapes work too. For Tenor:
+
+```bash
+CLIPBAIT_MEME_SEARCH_RESULTS="results"
+CLIPBAIT_MEME_SEARCH_VIDEO="media_formats.mp4.url"
+```
+
+For Giphy:
+
+```bash
+CLIPBAIT_MEME_SEARCH_RESULTS="data"
+CLIPBAIT_MEME_SEARCH_VIDEO="images.original.mp4"
+```
+
+Every value on the video path may also be an object containing `url` or `mp4`;
+the provider unwraps it. If a result has no usable URL, the next one is tried.
+The first video that downloads wins; none means "no insert", never a broken
+clip.
 
 ## How it renders
 

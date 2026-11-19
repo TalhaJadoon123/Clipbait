@@ -70,6 +70,18 @@ class Settings:
     meme_api_key: str | None = None
     meme_model: str = ""
     meme_poll_seconds: int = 240
+    # Search a user-supplied meme *library* (Giphy/Tenor/own catalogue). The
+    # query is the insert prompt; the first result whose video downloads wins.
+    meme_search_url: str | None = None
+    meme_search_key: str | None = None
+    meme_search_auth: str = "bearer"  # bearer | header | query | none
+    meme_search_header: str = "Authorization"
+    meme_search_key_param: str = "api_key"
+    meme_search_query_param: str = "q"
+    meme_search_results: str = "results"  # dot path to the result list
+    meme_search_video: str = "url"  # dot path to a video URL in each result
+    meme_search_limit: int = 8
+    meme_search_rating: str = ""  # e.g. "pg-13" for Giphy
     max_clips: int = 8
     target_clip_seconds: int = 55
     render_concurrency: int = 1
@@ -142,6 +154,16 @@ def get_settings() -> Settings:
         meme_api_key=_env("CLIPBAIT_MEME_API_KEY"),
         meme_model=_env("CLIPBAIT_MEME_MODEL", "") or "",
         meme_poll_seconds=max(10, _env_int("CLIPBAIT_MEME_POLL_SECONDS", 240)),
+        meme_search_url=_env("CLIPBAIT_MEME_SEARCH_URL"),
+        meme_search_key=_env("CLIPBAIT_MEME_SEARCH_KEY"),
+        meme_search_auth=(_env("CLIPBAIT_MEME_SEARCH_AUTH", "bearer") or "bearer").lower(),
+        meme_search_header=_env("CLIPBAIT_MEME_SEARCH_HEADER", "Authorization") or "Authorization",
+        meme_search_key_param=_env("CLIPBAIT_MEME_SEARCH_KEY_PARAM", "api_key") or "api_key",
+        meme_search_query_param=_env("CLIPBAIT_MEME_SEARCH_QUERY_PARAM", "q") or "q",
+        meme_search_results=_env("CLIPBAIT_MEME_SEARCH_RESULTS", "results") or "results",
+        meme_search_video=_env("CLIPBAIT_MEME_SEARCH_VIDEO", "url") or "url",
+        meme_search_limit=max(1, _env_int("CLIPBAIT_MEME_SEARCH_LIMIT", 8)),
+        meme_search_rating=_env("CLIPBAIT_MEME_SEARCH_RATING", "") or "",
         max_clips=_env_int("CLIPBAIT_MAX_CLIPS", 8),
         target_clip_seconds=_env_int("CLIPBAIT_TARGET_CLIP_SECONDS", 55),
         render_concurrency=max(1, _env_int("CLIPBAIT_RENDER_CONCURRENCY", 1)),
@@ -166,6 +188,7 @@ class Capabilities:
     llm_provider: str | None
     transcriber: str
     meme_provider: str | None = None
+    live_chat: str = "innertube"
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -178,6 +201,7 @@ class Capabilities:
             "llm_provider": self.llm_provider,
             "transcriber": self.transcriber,
             "meme_provider": self.meme_provider,
+            "live_chat": self.live_chat,
         }
 
 
@@ -213,6 +237,13 @@ def detect_capabilities(settings: Settings | None = None) -> Capabilities:
     if console == "auto":
         console = "whisper" if _has_module("faster_whisper") else "mock"
 
+    if _has_module("pytchat"):
+        live_chat = "pytchat"
+    elif _env("YOUTUBE_API_KEY"):
+        live_chat = "data-api"
+    else:
+        live_chat = "innertube"
+
     return Capabilities(
         ffmpeg=bool(shutil.which(settings.ffmpeg) or Path(settings.ffmpeg).exists()),
         ffprobe=bool(shutil.which(settings.ffprobe) or Path(settings.ffprobe).exists()),
@@ -223,6 +254,7 @@ def detect_capabilities(settings: Settings | None = None) -> Capabilities:
         llm_provider=provider,
         transcriber=console,
         meme_provider=_meme_provider_name(settings),
+        live_chat=live_chat,
     )
 
 

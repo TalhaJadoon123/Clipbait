@@ -110,6 +110,196 @@ class YouTubeChatSource(ChatSource):
         pass
 
 
+class YouTubeInnerTubeChatSource(ChatSource):
+    """Keyless YouTube live chat without ``pytchat``.
+
+    Reads the public watch page for the live-chat continuation token, then polls
+    YouTube's own web endpoint. No API key, no extra dependency - the same
+    transport the website uses. This is the fallback when the optional
+    ``pytchat`` extra is not installed, so a YouTube monitor still gets chat.
+    """
+
+    name = "youtube-innertube"
+    API = "https://www.youtube.com/youtubei/v1/live_chat/get_live_chat"
+    CLIENT_VERSION = "2.20240701.00.00"
+
+    def __init__(self, url: str, poll_seconds: float = 2.0) -> None:
+        super().__init__()
+        self.video_id = youtube_video_id(url)
+        self.poll_seconds = max(1.0, poll_seconds)
+        self._stop = threading.Event()
+        self._continuation: str | None = None
+
+    # ------------------------------------------------------------------ setup
+
+    def _context(self) -> dict:
+        return {
+            "client": {
+                "clientName": "WEB",
+                "clientVersion": self.CLIENT_VERSION,
+                "hl": "en",
+                "gl": "US",
+            }
+        }
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "content-type": "application/json",
+            "x-youtube-client-name": "1",
+            "x-youtube-client-version": self.CLIENT_VERSION,
+            "cookie": "CONSENT=YES+1",
+            "accept-language": "en-US,en;q=0.9",
+        }
+
+    @staticmethod
+    def _token_from_page(html: str) -> str | None:
+        """Pull the live-chat continuation token out of a YouTube page."""
+        # The page also contains a bare list of renderer names that includes
+        # "liveChatRenderer"; the real object is the one followed by a brace.
+        anchor = html.find('"liveChatRenderer":{')
+        if anchor == -1:
+            anchor = html.rfind('"liveChatRenderer"')
+        window = html[anchor : anchor + 12000] if anchor != -1 else html
+        patterns = (
+            r'"reloadContinuationData"\s*:\s*\{[^{}]*?"continuation"\s*:\s*"([^"]+)"',
+            r'"continuationCommand"\s*:\s*\{\s*"token"\s*:\s*"([^"]+)"',
+            r'"invalidationContinuationData"\s*:\s*\{[^{}]*?"continuation"\s*:\s*"([^"]+)"',
+        )
+        for pattern in patterns:
+            match = re.search(pattern, window)
+            if match:
+                return match.group(1)
+        return None
+
+    def _bootstrap(self) -> str:
+        import httpx
+
+        pages = (
+            f"https://www.youtube.com/watch?v={self.video_id}",
+            f"https://www.youtube.com/live_chat?is_popout=1&v={self.video_id}",
+        )
+        for page in pages:
+            try:
+                response = httpx.get(
+                    page, headers=self._headers(), timeout=30, follow_redirects=True
+                )
+            except httpx.HTTPError as exc:
+                log.debug("live chat bootstrap failed for %s: %s", page, exc)
+                continue
+            if response.status_code >= 400:
+                continue
+            token = self._token_from_page(response.text)
+            if token:
+                return token
+        raise ChatError(
+            "this YouTube video has no readable live chat. Is it live, public, "
+            "and is chat enabled? Install 'clipbait[live]' or set YOUTUBE_API_KEY "
+            "for other chat transports."
+        )
+
+    # ------------------------------------------------------------------- read
+
+    def _poll(self) -> dict:
+        import httpx
+
+        if not self._continuation:
+            self._continuation = self._bootstrap()
+        response = httpx.post(
+            self.API,
+            headers=self._headers(),
+            json={"context": self._context(), "continuation": self._continuation},
+            timeout=30,
+        )
+        if response.status_code >= 400:
+            raise ChatError(f"YouTube live chat {response.status_code}")
+        return response.json()
+
+    @staticmethod
+    def _renderer_text(renderer: dict) -> str:
+        message = renderer.get("message") or {}
+        runs = message.get("runs") or []
+        if runs:
+            return "".join(str(run.get("text", "")) for run in runs)
+        return str(message.get("simpleText") or "")
+
+    @staticmethod
+    def _author(renderer: dict) -> str:
+        author = renderer.get("authorName") or {}
+        if isinstance(author, dict):
+            return str(author.get("simpleText") or "".join(
+                str(run.get("text", "")) for run in author.get("runs") or []
+            ))
+        return ""
+
+    def _messages_from(self, payload: dict) -> list[ChatMessage]:
+        contents = (payload.get("continuationContents") or {}).get("liveChatContinuation") or {}
+        out: list[ChatMessage] = []
+        for action in contents.get("actions") or []:
+            item = (action.get("addChatItemAction") or {}).get("item") or {}
+            renderer = (
+                item.get("liveChatTextMessageRenderer")
+                or item.get("liveChatPaidMessageRenderer")
+                or item.get("liveChatMembershipItemRenderer")
+            )
+            if not isinstance(renderer, dict):
+                continue
+            text = self._renderer_text(renderer).strip()
+            if not text:
+                continue
+            kind = "text"
+            if "liveChatPaidMessageRenderer" in item:
+                kind = "superchat"
+            elif "liveChatMembershipItemRenderer" in item:
+                kind = "membership"
+            out.append(
+                ChatMessage(
+                    t=round(self.elapsed(), 3),
+                    author=self._author(renderer)[:24],
+                    text=text[:240],
+                    kind=kind,
+                )
+            )
+        return out
+
+    def _advance(self, payload: dict) -> float:
+        contents = (payload.get("continuationContents") or {}).get("liveChatContinuation") or {}
+        for continuation in contents.get("continuations") or []:
+            for key in ("invalidationContinuationData", "timedContinuationData"):
+                data = continuation.get(key) or {}
+                token = data.get("continuation")
+                if token:
+                    self._continuation = token
+                    timeout = float(data.get("timeoutMs") or 0) / 1000
+                    return min(10.0, max(1.0, timeout or self.poll_seconds))
+        return self.poll_seconds
+
+    def messages(self) -> Iterator[ChatMessage]:
+        failures = 0
+        while not self._stop.is_set():
+            try:
+                payload = self._poll()
+            except (ChatError, OSError) as exc:
+                failures += 1
+                log.warning("YouTube live chat read failed (%d): %s", failures, exc)
+                if failures >= 10:
+                    raise ChatError(f"YouTube live chat stopped responding: {exc}") from exc
+                time.sleep(min(30.0, 2.0 * failures))
+                continue
+            except Exception as exc:  # noqa: BLE001 - httpx errors and bad JSON
+                failures += 1
+                log.warning("YouTube live chat read failed (%d): %s", failures, exc)
+                if failures >= 10:
+                    raise ChatError(f"YouTube live chat stopped responding: {exc}") from exc
+                time.sleep(min(30.0, 2.0 * failures))
+                continue
+            failures = 0
+            yield from self._messages_from(payload)
+            time.sleep(self._advance(payload))
+
+    def close(self) -> None:
+        self._stop.set()
+
+
 class YouTubeApiChatSource(ChatSource):
     """Official Data API. Needs YOUTUBE_API_KEY; public streams only."""
 
@@ -316,11 +506,21 @@ def resolve_chat_source(url: str, provider: str = "auto", api_key: str | None = 
     if "twitch.tv" in url:
         return TwitchChatSource(url)
     if "youtube.com" in url or "youtu.be" in url:
-        if provider == "api" and api_key:
+        if provider == "api":
+            if not api_key:
+                raise ChatError("the YouTube Data API source needs YOUTUBE_API_KEY")
             return YouTubeApiChatSource(url, api_key)
-        if provider == "auto" and not _module("pytchat") and api_key:
+        if provider == "pytchat":
+            return YouTubeChatSource(url)
+        if provider == "innertube":
+            return YouTubeInnerTubeChatSource(url)
+        # auto: pytchat is the lightest transport when installed; otherwise the
+        # keyless InnerTube reader keeps YouTube monitors working out of the box.
+        if _module("pytchat"):
+            return YouTubeChatSource(url)
+        if api_key:
             return YouTubeApiChatSource(url, api_key)
-        return YouTubeChatSource(url)
+        return YouTubeInnerTubeChatSource(url)
     raise ChatError("unsupported live URL: use YouTube, Twitch or demo://live")
 
 

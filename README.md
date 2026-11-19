@@ -168,6 +168,27 @@ POST   /live/demo
 
 Media is only served by clip id (never by user-supplied path), and every URL source passes an SSRF guard before download.
 
+### Link mode — clip without downloading the whole video
+
+A URL project defaults to link mode (`source_mode: "auto"`). Instead of fetching
+the entire file, Clipbait:
+
+1. downloads **audio only** (`bestaudio`, a few MB) for transcription;
+2. keeps the moments it wants;
+3. fetches only each kept clip's `[start, end]` window with
+   `yt-dlp --download-sections`, then renders from that window.
+
+A 40-second clip out of a two-hour stream therefore costs roughly 40 seconds of
+transfer. Timings stay exact: the fetched window starts at the clip start, so
+every word and chat message is rebased by `-start` and rendered on a timeline
+that begins at zero.
+
+Link mode is a fast path, not a hard requirement. If the site cannot serve
+ranges, or a section download fails, the pipeline falls back to a normal full
+download automatically. Set `source_mode: "download"` (or switch **Link mode**
+off in the new-clip form) to force the old behaviour. Local uploads never use
+link mode.
+
 ---
 
 ## How it works
@@ -247,7 +268,8 @@ Chat sources:
 
 | Source | Key needed | Notes |
 |---|---|---|
-| YouTube (`pytchat`) | none | `pip install 'clipbait[live]'` |
+| YouTube (`pytchat`) | none | used when the optional `clipbait[live]` extra is installed |
+| YouTube InnerTube | none | keyless fallback; reads the public chat endpoint like the website |
 | YouTube Data API | `YOUTUBE_API_KEY` | polling fallback for public streams |
 | Twitch IRC | none | anonymous TLS read |
 | `demo://live` | none | synthetic stream + scripted chat spikes |
@@ -297,11 +319,14 @@ degrading the clip:
   The original spoken audio keeps running underneath, and word-level captions
   are burned on top of the insert from the same timings. Nothing is re-timed.
 
-Insert assets come from `CLIPBAIT_MEME_API_URL` (a hosted text-to-video API) when
-configured. With no key, Clipbait falls back to a locally ffmpeg-rendered
-placeholder card so the feature is testable offline — the same zero-key
-philosophy as the mock transcriber. A provider failure is a skipped insert, never
-a failed render. See [`docs/MEMES.md`](docs/MEMES.md).
+Insert assets come from `CLIPBAIT_MEME_SEARCH_URL` (search your own meme
+library) or `CLIPBAIT_MEME_API_URL` (a hosted text-to-video API) when
+configured. The search provider maps any JSON endpoint with two dot paths, so
+Giphy, Tenor or a private catalogue can be plugged in without code changes. With
+nothing configured, Clipbait falls back to a locally ffmpeg-rendered placeholder
+card so the feature is testable offline — the same zero-key philosophy as the
+mock transcriber. A provider failure is a skipped insert, never a failed render.
+See [`docs/MEMES.md`](docs/MEMES.md) for the exact contract.
 
 Details: [`docs/VIRALITY.md`](docs/VIRALITY.md).
 
@@ -328,14 +353,19 @@ Everything is environment-driven. Defaults are safe for a laptop.
 | `CLIPBAIT_TARGET_CLIP_SECONDS` | `55` | Default target length |
 | `CLIPBAIT_RENDER_CONCURRENCY` | `1` | Parallel render workers |
 | `CLIPBAIT_HW_ENCODER` | `auto` | `cpu`, `nvenc`, `qsv`, `vaapi`, `videotoolbox` |
-| `CLIPBAIT_MEME_PROVIDER` | `auto` | Meme video inserts: `auto`, `api`, `fixture`, `none` |
+| `CLIPBAIT_MEME_PROVIDER` | `auto` | Meme video inserts: `auto`, `search`, `api`, `fixture`, `none` |
+| `CLIPBAIT_MEME_SEARCH_URL` | — | Searchable meme library endpoint (see `docs/MEMES.md`) |
+| `CLIPBAIT_MEME_SEARCH_KEY` | — | Key/token for the meme library |
+| `CLIPBAIT_MEME_SEARCH_AUTH` | `bearer` | `bearer`, `header`, `query`, `none` |
+| `CLIPBAIT_MEME_SEARCH_RESULTS` | `results` | Dot path to the result list |
+| `CLIPBAIT_MEME_SEARCH_VIDEO` | `url` | Dot path to each result's video URL |
 | `CLIPBAIT_MEME_API_URL` | — | Hosted text-to-video endpoint for meme inserts |
 | `CLIPBAIT_MEME_API_KEY` | — | Bearer token for the meme API |
 | `CLIPBAIT_MEME_MODEL` | — | Optional model id sent to the meme API |
 | `CLIPBAIT_MEME_POLL_SECONDS` | `240` | Async generation poll budget |
 | `CLIPBAIT_LIVE_BUFFER_SECONDS` | `180` | Ring buffer depth |
 | `CLIPBAIT_LIVE_SEGMENT_SECONDS` | `4` | HLS segment size |
-| `CLIPBAIT_LIVE_CHAT_PROVIDER` | `auto` | `auto`, `youtube`, `twitch`, `demo` |
+| `CLIPBAIT_LIVE_CHAT_PROVIDER` | `auto` | `auto`, `pytchat`, `innertube`, `api`, `demo` |
 | `YOUTUBE_API_KEY` | — | YouTube Data API chat fallback |
 | `CLIPBAIT_ALLOW_PRIVATE_URLS` | `0` | Allow LAN/localhost ingestion (disables SSRF guard) |
 | `CLIPBAIT_CORS_ORIGINS` | `*` | Comma-separated origins |

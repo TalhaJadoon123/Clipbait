@@ -10,6 +10,7 @@ from .plan import Insert, InsertConfig, plan_inserts
 from .providers import (
     ApiMemeProvider,
     FixtureMemeProvider,
+    HttpMemeProvider,
     MemeError,
     MemeProvider,
     MemeRequest,
@@ -21,6 +22,7 @@ from .providers import (
 __all__ = [
     "ApiMemeProvider",
     "FixtureMemeProvider",
+    "HttpMemeProvider",
     "Insert",
     "InsertConfig",
     "MemeError",

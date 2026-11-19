@@ -7,7 +7,9 @@ the suite stays fast while still covering the real control flow.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from helpers import FixedTranscriber, make_video, scripted_transcript
@@ -372,6 +374,191 @@ def test_process_live_moment_requires_a_capture():
     project = make_project(None)
     with pytest.raises(ValueError, match="no source"):
         pipeline.process_live_moment(project["id"], {"title": "x"})
+
+
+def make_link_project(**options) -> dict:
+    payload = {
+        "clips": 1,
+        "target_seconds": 15,
+        "meme_inserts": False,
+        **options,
+    }
+    return db.create_project(
+        {
+            "title": "Link project",
+            "source_kind": "youtube",
+            "source_url": "https://example.com/watch?v=abc",
+            "source_path": None,
+            "duration": SOURCE_SECONDS,
+            "options": ProjectOptions(**payload).model_dump(),
+        }
+    )
+
+
+def test_link_mode_predicate(source):
+    local = make_project(source)
+    assert pipeline._link_mode(local, ProjectOptions()) is False
+
+    remote = make_link_project()
+    assert pipeline._link_mode(remote, ProjectOptions()) is True
+    assert pipeline._link_mode(remote, ProjectOptions(source_mode="download")) is False
+
+
+def test_link_mode_reuses_the_audio_on_retry(source, monkeypatch):
+    project = make_link_project()
+    audio = storage.link_audio_path(project["id"])
+    audio.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, audio)
+
+    def explode(*_a, **_k):
+        raise AssertionError("the audio must not be downloaded twice")
+
+    monkeypatch.setattr("clipbait.ingest.fetch_audio", explode)
+    updated = pipeline.ensure_source(project, None)
+    assert updated["id"] == project["id"]
+    assert updated["source_path"] is None
+
+
+def test_process_project_link_mode_never_downloads_the_whole_video(
+    source, transcript, monkeypatch
+):
+    project = make_link_project()
+    fixed_transcriber(monkeypatch, transcript)
+    monkeypatch.setattr(
+        pipeline.analyze,
+        "analyze",
+        lambda *a, **k: (
+            [Highlight(start=0.0, end=14.0, title="Moment", hook="Moment", scores={"overall": 80})],
+            {"provider": "stub"},
+        ),
+    )
+
+    audio_calls: list[str] = []
+    section_calls: list[tuple[float, float]] = []
+
+    def fake_fetch_audio(url, project_id, on_progress=None):
+        audio_calls.append(url)
+        target = storage.link_audio_path(project_id)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        if on_progress:
+            on_progress(1.0, "Audio ready")
+        return IngestResult(
+            path=target,
+            title="Linked talk",
+            duration=SOURCE_SECONDS,
+            source_kind="youtube",
+            webpage_url=url,
+        )
+
+    def fake_fetch_section(url, start, end, target, *, on_progress=None):
+        section_calls.append((start, end))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        if on_progress:
+            on_progress(1.0, "Section ready")
+        return target
+
+    monkeypatch.setattr("clipbait.ingest.fetch_audio", fake_fetch_audio)
+    monkeypatch.setattr("clipbait.ingest.fetch_section", fake_fetch_section)
+
+    result = pipeline.process_project(project["id"])
+
+    assert result["clips"] == 1
+    stored = db.get_project(project["id"])
+    assert stored["status"] == "completed"
+    # Link mode: the whole-file path was never populated, and only one section
+    # (the kept clip) was fetched from the remote source.
+    assert stored["source_path"] is None
+    assert audio_calls == ["https://example.com/watch?v=abc"]
+    assert section_calls == [(0.0, 14.0)]
+
+    clip = db.list_clips(project["id"])[0]
+    assert clip["status"] == "ready"
+    assert clip["meta"]["link_mode"] is True
+    assert storage.resolve(clip["render_path"]).exists()
+
+
+def test_link_mode_shifts_words_and_chat_to_the_clip_window(source, transcript, monkeypatch):
+    project = make_link_project()
+    clip = db.create_clip(
+        {
+            "project_id": project["id"],
+            "title": "Second moment",
+            "hook": "Second moment",
+            "start": 10.0,
+            "end": 24.0,
+            "caption_preset": "default",
+            "reframe_mode": "center",
+            "meta": {"chat": [{"t": 12.0, "author": "a", "text": "clip it"}]},
+        }
+    )
+    monkeypatch.setattr(
+        "clipbait.ingest.fetch_section",
+        lambda url, start, end, target, **k: shutil.copyfile(source, target) or target,
+    )
+
+    captured: dict = {}
+
+    def fake_render(source_path, out_path, start, end, plan, **kwargs):
+        captured.update({"start": start, "end": end, "words": kwargs.get("words"), "chat": kwargs.get("chat")})
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"video")
+        return SimpleNamespace(path=out_path, duration=14.0, size_bytes=5)
+
+    monkeypatch.setattr(pipeline, "render_clip", fake_render)
+
+    updated = pipeline.render_clip_record(clip["id"], transcript=transcript)
+
+    assert captured["start"] == 0.0
+    assert captured["end"] == 14.0
+    # Every word is rebased on the fetched window, so captions cannot drift.
+    original = transcript.words
+    for before, after in zip(original, captured["words"], strict=False):
+        assert after.start == pytest.approx(before.start - 10.0)
+    assert captured["chat"][0].t == pytest.approx(2.0)
+    assert updated["meta"]["link_mode"] is True
+
+
+def test_link_mode_falls_back_to_a_full_download(source, transcript, monkeypatch):
+    project = make_link_project()
+    clip = db.create_clip(
+        {
+            "project_id": project["id"],
+            "title": "Fallback",
+            "hook": "Fallback",
+            "start": 0.0,
+            "end": 6.0,
+            "caption_preset": "default",
+            "reframe_mode": "center",
+        }
+    )
+
+    def broken_section(*_a, **_k):
+        raise media.MediaError("range requests unsupported")
+
+    full = storage.source_path(project["id"])
+    full.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, full)
+
+    def fake_ingest(project_row, job_id, on_progress=None):
+        return IngestResult(
+            path=full,
+            title="Downloaded anyway",
+            duration=SOURCE_SECONDS,
+            source_kind="youtube",
+            webpage_url=project_row["source_url"],
+        )
+
+    monkeypatch.setattr("clipbait.ingest.fetch_section", broken_section)
+    monkeypatch.setattr(pipeline, "ingest_source", fake_ingest)
+
+    updated = pipeline.render_clip_record(clip["id"], transcript=transcript)
+
+    assert updated["status"] == "ready"
+    assert db.get_project(project["id"])["source_path"] is not None
+    # Once the full file is on disk the clip renders on the original timeline.
+    assert updated["meta"]["link_mode"] is False
 
 
 def test_cleanup_outputs_removes_the_project_dir(source):

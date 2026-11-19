@@ -74,26 +74,47 @@ class Recorder:
         return {}
 
 
-def resolve_live_stream(url: str, height: int = 720) -> str:
+def resolve_live_streams(url: str, height: int = 720) -> list[str]:
+    """Resolve a live page to 1-2 direct stream URLs (video, maybe audio).
+
+    YouTube's live HLS exposes *video-only* formats and separate audio-only
+    formats, so the old ``best[height<=720]`` selector matched nothing and the
+    recorder failed with "Requested format is not available". Selecting
+    ``bv*+ba`` gets both streams; when the platform serves a muxed stream there
+    is only one URL and the recorder uses it directly.
+    """
     settings = get_settings()
+    formats = f"bv*[height<={height}]+ba/b[height<={height}]/b"
     proc = media.run(
         [
             settings.ytdlp,
             "-g",
             "-f",
-            f"best[height<={height}]/best",
+            formats,
             "--no-warnings",
             url,
         ],
-        timeout=60,
+        timeout=90,
         check=False,
     )
-    lines = [line.strip() for line in (proc.stdout or "").splitlines() if line.strip().startswith("http")]
+    lines = [
+        line.strip()
+        for line in (proc.stdout or "").splitlines()
+        if line.strip().startswith(("http://", "https://"))
+    ]
     if not lines:
+        detail = " ".join((getattr(proc, "stderr", "") or "").strip().splitlines()[-1:])[:220]
+        hint = f" ({detail})" if detail else ""
         raise RecorderError(
             "could not resolve the live stream URL. Is the stream live and public?"
+            + hint
         )
-    return lines[0]
+    return lines[:2]
+
+
+def resolve_live_stream(url: str, height: int = 720) -> str:
+    """Single-URL form, kept for callers that only need the first stream."""
+    return resolve_live_streams(url, height)[0]
 
 
 class HlsRecorder(Recorder):
@@ -114,7 +135,7 @@ class HlsRecorder(Recorder):
         self._started = 0.0
 
     def start(self) -> None:
-        stream_url = resolve_live_stream(self.url)
+        streams = resolve_live_streams(self.url)
         self._started = time.monotonic()
         list_path = self.directory / "segments.csv"
         cmd = [
@@ -123,8 +144,19 @@ class HlsRecorder(Recorder):
             "-loglevel",
             "warning",
             "-y",
+            # Live HLS drops connections; reconnect instead of ending the buffer.
+            "-reconnect",
+            "1",
+            "-reconnect_streamed",
+            "1",
+            "-reconnect_delay_max",
+            "5",
             "-i",
-            stream_url,
+            streams[0],
+        ]
+        if len(streams) > 1:
+            cmd += ["-i", streams[1], "-map", "0:v:0", "-map", "1:a:0?"]
+        cmd += [
             "-c",
             "copy",
             "-f",

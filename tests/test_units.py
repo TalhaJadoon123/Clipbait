@@ -898,6 +898,23 @@ def test_get_meme_provider_variants():
         mp.get_meme_provider(settings_with(meme_provider="fixture")), mp.FixtureMemeProvider
     )
     assert isinstance(
+        mp.get_meme_provider(
+            settings_with(meme_provider="search", meme_search_url="https://lib/search")
+        ),
+        mp.HttpMemeProvider,
+    )
+    # auto prefers a real meme library over generation, then generation, then fixture.
+    assert isinstance(
+        mp.get_meme_provider(
+            settings_with(
+                meme_provider="auto",
+                meme_search_url="https://lib/search",
+                meme_api_url="https://api/gen",
+            )
+        ),
+        mp.HttpMemeProvider,
+    )
+    assert isinstance(
         mp.get_meme_provider(settings_with(meme_provider="auto", meme_api_url="https://x")),
         mp.ApiMemeProvider,
     )
@@ -907,6 +924,158 @@ def test_get_meme_provider_variants():
     )
     assert mp.provider_name(None) is None
     assert mp.provider_name(mp.FixtureMemeProvider()) == "fixture"
+    assert mp.provider_name(mp.HttpMemeProvider()) == "search"
+
+
+# ------------------------------------------------------------ meme search API
+
+
+def search_settings(**overrides):
+    base = dict(
+        meme_search_url="https://lib.example.com/search",
+        meme_search_key="k",
+        meme_search_results="data",
+        meme_search_video="media.mp4.url",
+        meme_search_limit=3,
+    )
+    base.update(overrides)
+    return settings_with(**base)
+
+
+def test_http_provider_requires_a_url(tmp_path):
+    provider = mp.HttpMemeProvider(search_settings(meme_search_url=None))
+    assert provider.available() is False
+    with pytest.raises(mp.MemeError, match="not set"):
+        provider.generate(mp.MemeRequest("p", 1, 10, 10), tmp_path)
+
+
+def test_http_provider_query_is_a_meme_search():
+    provider = mp.HttpMemeProvider(search_settings())
+    request = mp.MemeRequest(
+        "reaction b-roll for shock, failure: and then the system totally broke", 2, 10, 10
+    )
+    assert provider.query_for(request) == "shock failure system totally broke"
+    assert provider.query_for(mp.MemeRequest("...", 1, 10, 10)) == "reaction"
+
+
+def test_http_provider_searches_and_downloads_the_first_playable(tmp_path, monkeypatch):
+    provider = mp.HttpMemeProvider(search_settings())
+    request = mp.MemeRequest("reaction b-roll: wow", 1.0, 10, 10)
+    calls: dict = {}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls.update({"url": url, "headers": headers, "params": params})
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {
+                "data": [
+                    {"media": {"mp4": {"url": "https://cdn/bad.mp4"}}},
+                    {"media": {"mp4": {"url": "https://cdn/good.mp4"}}},
+                    {"media": {"mp4": {"url": "https://cdn/never.mp4"}}},
+                ]
+            },
+        )
+
+    attempts: list[str] = []
+
+    def fake_download(url, target):
+        attempts.append(url)
+        if url.endswith("bad.mp4"):
+            raise mp.MemeError("dead cdn")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"video")
+
+    monkeypatch.setattr(mp.httpx, "get", fake_get)
+    monkeypatch.setattr(mp, "_download_stream", fake_download)
+
+    result = provider.generate(request, tmp_path)
+    assert result is not None and result.read_bytes() == b"video"
+    assert attempts == ["https://cdn/bad.mp4", "https://cdn/good.mp4"]
+    assert calls["headers"]["authorization"] == "Bearer k"
+    assert calls["params"]["q"] == "wow"
+    assert calls["params"]["limit"] == "3"
+
+
+def test_http_provider_auth_styles_and_template_query():
+    provider = mp.HttpMemeProvider(
+        search_settings(meme_search_auth="header", meme_search_header="X-Api-Key")
+    )
+    assert provider._headers()["X-Api-Key"] == "k"
+
+    provider = mp.HttpMemeProvider(search_settings(meme_search_auth="query"))
+    assert provider._params("wow")["api_key"] == "k"
+
+    provider = mp.HttpMemeProvider(
+        search_settings(meme_search_auth="none", meme_search_key=None)
+    )
+    assert "authorization" not in provider._headers()
+
+    provider = mp.HttpMemeProvider(
+        search_settings(meme_search_url="https://lib/search?term={query}")
+    )
+    seen: dict = {}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        seen.update({"url": url, "params": params})
+        return SimpleNamespace(
+            status_code=200,
+            json=lambda: {"data": [{"media": {"mp4": {"url": "https://cdn/a.mp4"}}}]},
+            text="",
+        )
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(mp.httpx, "get", fake_get)
+    try:
+        found = provider._search("big wow")
+    finally:
+        monkeypatch.undo()
+    assert found == ["https://cdn/a.mp4"]
+    assert seen["url"] == "https://lib/search?term=big+wow"
+    assert "q" not in seen["params"]
+
+
+def test_http_provider_empty_and_bad_responses(tmp_path, monkeypatch):
+    provider = mp.HttpMemeProvider(search_settings())
+    monkeypatch.setattr(
+        mp.httpx,
+        "get",
+        lambda *a, **k: SimpleNamespace(status_code=200, json=lambda: {"data": []}, text=""),
+    )
+    with pytest.raises(mp.MemeError, match="no results"):
+        provider.generate(mp.MemeRequest("p", 1, 10, 10), tmp_path)
+
+    monkeypatch.setattr(
+        mp.httpx,
+        "get",
+        lambda *a, **k: SimpleNamespace(status_code=200, json=lambda: {"other": []}, text=""),
+    )
+    with pytest.raises(mp.MemeError, match="no result list"):
+        provider.generate(mp.MemeRequest("p", 1, 10, 10), tmp_path)
+
+    monkeypatch.setattr(
+        mp.httpx,
+        "get",
+        lambda *a, **k: SimpleNamespace(status_code=503, json=lambda: {}, text="down"),
+    )
+    with pytest.raises(mp.MemeError, match="503"):
+        provider.generate(mp.MemeRequest("p", 1, 10, 10), tmp_path)
+
+
+def test_http_provider_cache_hit(tmp_path):
+    request = mp.MemeRequest("prompt", 1.0, 10, 10)
+    cached = tmp_path / f"{request.cache_key}.mp4"
+    cached.write_bytes(b"video")
+    provider = mp.HttpMemeProvider(search_settings())
+    assert provider.generate(request, tmp_path) == cached
+
+
+def test_dot_get():
+    payload = {"a": {"b": [{"c": "x"}]}}
+    assert mp._dot_get(payload, "a.b.0.c") == "x"
+    assert mp._dot_get(payload, "a.missing.c") is None
+    assert mp._dot_get(payload, "a.b.9.c") is None
+    assert mp._dot_get("scalar", "a") is None
 
 
 def test_fixture_provider_renders_and_caches(tmp_path):

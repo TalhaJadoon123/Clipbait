@@ -97,6 +97,10 @@ class ProjectOptions(BaseModel):
     memes: bool = True
     variants: int = Field(default=4, ge=1, le=8)
     allow_medium_risk: bool = False
+    # ``auto`` streams a URL source: only the audio is downloaded for
+    # transcription and each kept clip is fetched as a short section. ``download``
+    # forces the old "fetch the whole file first" behaviour.
+    source_mode: Literal["auto", "download"] = "auto"
     # Meme *video* inserts (b-roll cutaways between spoken sentences). Off by
     # default: it changes the footage, not just the copy.
     meme_inserts: bool = False
