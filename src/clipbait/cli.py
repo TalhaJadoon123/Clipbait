@@ -867,7 +867,10 @@ def build_parser() -> argparse.ArgumentParser:
     auto.add_argument("--minutes", type=int, default=30, help="minutes to watch per round")
     auto.add_argument("--cooldown", type=int, default=60, help="seconds between rounds")
     auto.add_argument(
-        "--max-clips", type=int, default=4, help="stop a round after this many clips; 0 = no cap"
+        "--max-clips",
+        type=int,
+        default=4,
+        help="stop a round after this many clips rendered; 0 = no cap",
     )
     auto.add_argument("--threshold", type=float, default=3.0, help="chat spike z-score threshold")
     auto.add_argument(

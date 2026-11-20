@@ -18,8 +18,10 @@ from clipbait.autopilot import (
     Runtime,
     export_monitor,
     more_rounds,
+    pending_clips,
     pick_stream,
     publish_monitor,
+    ready_clips,
     round_finished,
     run,
 )
@@ -52,6 +54,7 @@ def make_runtime(
     *,
     streams=None,
     clips_per_round: int = 2,
+    clip_sequence=None,
     fail_start: bool = False,
     interrupt_on_clips: bool = False,
     clock: Clock | None = None,
@@ -60,6 +63,8 @@ def make_runtime(
     clock = clock or Clock()
     calls: dict = {"discover": [], "start": [], "stop": [], "clips": [], "export": [], "publish": [], "sleep": []}
     streams = streams if streams is not None else [Stream("https://x/a", "Room A", "alpha", 900)]
+    sequence = clip_sequence or [[{"id": f"clip_{i}", "status": "ready"} for i in range(clips_per_round)]]
+    step = {"n": 0}
 
     def discover(query, limit, timeout):
         calls["discover"].append((query, limit, timeout))
@@ -81,7 +86,9 @@ def make_runtime(
         if interrupt_on_clips:
             raise KeyboardInterrupt
         calls["clips"].append(monitor_id)
-        return [{"id": f"clip_{i}", "meta": {"monitor_id": monitor_id}} for i in range(clips_per_round)]
+        index = min(step["n"], len(sequence) - 1)
+        step["n"] += 1
+        return [dict(clip, meta={"monitor_id": monitor_id}) for clip in sequence[index]]
 
     def export(monitor_id, options):
         calls["export"].append(monitor_id)
@@ -137,6 +144,18 @@ def test_pick_stream_takes_the_biggest_unwatched_room() -> None:
     assert pick_stream(streams, {"https://x/a"}).url == "https://x/b"
     assert pick_stream(streams, {"https://x/a", "https://x/b", "https://x/c"}) is None
     assert pick_stream([], set()) is None
+
+
+def test_ready_and_pending_split_clips_by_status() -> None:
+    clips = [
+        {"status": "ready"},
+        {"status": "rendering"},
+        {"status": "draft"},
+        {"status": "failed"},
+        {},
+    ]
+    assert len(ready_clips(clips)) == 1
+    assert len(pending_clips(clips)) == 2
 
 
 # ----------------------------------------------------------------------- loop
@@ -221,6 +240,38 @@ def test_run_stops_the_monitor_when_interrupted() -> None:
     assert len(rounds) == 1
     assert calls["stop"] == ["mon_1"]
     assert calls["publish"] == []
+
+
+def test_round_waits_for_a_render_to_finish_before_counting_it() -> None:
+    sequence = [
+        [],
+        [{"id": "clip_0", "status": "rendering"}],
+        [{"id": "clip_0", "status": "ready"}],
+    ]
+    runtime, calls, _ = make_runtime(clip_sequence=sequence)
+    options = AutopilotOptions(source="https://x/a", rounds=1, minutes=30, max_clips=1)
+
+    rounds = run(options, runtime=runtime, on_event=lambda _: None)
+
+    assert rounds[0].clips == 1
+    assert calls["export"] == ["mon_1"]
+    assert len(calls["clips"]) >= 3  # polled past the rendering state
+
+
+def test_round_drains_a_render_still_in_flight_after_the_cap() -> None:
+    sequence = [
+        [{"id": "a", "status": "ready"}, {"id": "b", "status": "rendering"}],
+        [{"id": "a", "status": "ready"}, {"id": "b", "status": "rendering"}],
+        [{"id": "a", "status": "ready"}, {"id": "b", "status": "ready"}],
+    ]
+    runtime, calls, _ = make_runtime(clip_sequence=sequence)
+    options = AutopilotOptions(source="https://x/a", rounds=1, minutes=30, max_clips=1)
+
+    rounds = run(options, runtime=runtime, on_event=lambda _: None)
+
+    assert rounds[0].clips == 2  # the drained render was counted
+    assert calls["sleep"].count(3.0) >= 2  # reached the cap, then drained
+    assert calls["export"] == ["mon_1"]
 
 
 # --------------------------------------------------------- monitor construction

@@ -3,7 +3,10 @@
 ``earn.sh`` is one pass. This is the loop that keeps going. Each round:
 
 1. finds the biggest live room for a query (or uses a fixed ``--source``);
-2. monitors it until the round's minutes are up *or* enough clips rendered;
+2. monitors it until the round's minutes are up *or* enough clips **rendered**
+   (a clip row appears the instant a moment is detected, but the render runs on
+   a thread, so only ready clips count and a round drains what is in flight
+   before it stops);
 3. stops the monitor, exports what is ready, and -- only when publishing is on --
    hands those clips to :func:`clipbait.publish.publish_queue` at their windows;
 4. picks the next room and goes again.
@@ -25,6 +28,11 @@ from dataclasses import dataclass, field
 log = logging.getLogger("clipbait.autopilot")
 
 POLL_SECONDS = 3.0
+# A moment produces a clip row immediately, but the render runs on a thread.
+# Stop on *ready* clips, then let any render still in flight finish (bounded) so
+# a round never stops mid-render and packages nothing.
+DRAIN_SECONDS = 90.0
+PENDING_STATUSES = {"draft", "rendering"}
 
 
 @dataclass(frozen=True)
@@ -110,6 +118,20 @@ def pick_stream(streams, used: set[str]):
         if url and url not in used:
             return stream
     return None
+
+
+def _clip_status(clip) -> str:
+    return str(_field(clip, "status", "") or "")
+
+
+def ready_clips(clips) -> list:
+    """Only the clips that finished rendering -- what the cap and export count."""
+    return [clip for clip in clips if _clip_status(clip) == "ready"]
+
+
+def pending_clips(clips) -> list:
+    """Clips a render thread is still working on, worth waiting out."""
+    return [clip for clip in clips if _clip_status(clip) in PENDING_STATUSES]
 
 
 # ------------------------------------------------------------------- side effects
@@ -284,7 +306,7 @@ def run(
             while not round_finished(
                 elapsed=runtime.now() - started,
                 minutes=options.minutes,
-                clips=len(clips),
+                clips=len(ready_clips(clips)),
                 max_clips=options.max_clips,
             ):
                 runtime.sleep(POLL_SECONDS)
@@ -292,6 +314,14 @@ def run(
                 state = str(runtime.status(monitor_id).get("status") or "")
                 if state in {"failed", "stopped"}:
                     break
+
+            # A render started just before the round ended should still land.
+            # Wait out anything in flight, bounded, so the export is not empty.
+            drain_started = runtime.now()
+            clips = runtime.clips(monitor_id)
+            while pending_clips(clips) and runtime.now() - drain_started < DRAIN_SECONDS:
+                runtime.sleep(POLL_SECONDS)
+                clips = runtime.clips(monitor_id)
         except KeyboardInterrupt:
             on_event("  interrupted; stopping the monitor")
             runtime.stop(monitor_id)
@@ -300,10 +330,11 @@ def run(
 
         runtime.stop(monitor_id)
         clips = runtime.clips(monitor_id)
+        rendered = len(ready_clips(clips))
         exported = runtime.export(monitor_id, options)
         published = runtime.publish(monitor_id, options) if options.live else 0
         on_event(
-            f"  {len(clips)} clip(s) rendered, {exported} packaged"
+            f"  {rendered} clip(s) rendered, {exported} packaged"
             + (f", {published} sent" if options.live else "")
         )
         results.append(
@@ -312,7 +343,7 @@ def run(
                 source=source,
                 title=title,
                 monitor_id=monitor_id,
-                clips=len(clips),
+                clips=rendered,
                 exported=exported,
                 published=published,
             )
