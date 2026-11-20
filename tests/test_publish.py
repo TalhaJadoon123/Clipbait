@@ -383,6 +383,32 @@ def test_live_publish_sends_once_and_marks_the_clip() -> None:
     assert uploaded["scheduled_for"]
 
 
+def test_per_platform_result_link_is_recorded() -> None:
+    # Upload-Post nests the outcome per network, so a posted clip must pick the
+    # link out of results.<platform> rather than storing an empty URL.
+    clip = make_ready()
+    provider = FakeProvider()
+    provider.upload = lambda **kwargs: {
+        "success": True,
+        "job_id": "job_9",
+        "status": "completed",
+        "results": {
+            "youtube": {
+                "success": True,
+                "post_id": "ZKgCGH1FP5A",
+                "url": "https://www.youtube.com/watch?v=ZKgCGH1FP5A",
+            }
+        },
+    }
+
+    result = publish_clip(clip["id"], options=PublishOptions(live=True), provider=provider)
+
+    assert result.url == "https://www.youtube.com/watch?v=ZKgCGH1FP5A"
+    assert result.post_id == "ZKgCGH1FP5A"
+    uploaded = (db.get_clip(clip["id"]).get("meta") or {}).get("uploaded") or {}
+    assert uploaded["url"] == "https://www.youtube.com/watch?v=ZKgCGH1FP5A"
+
+
 def test_a_second_live_run_skips_the_already_posted_clip() -> None:
     clip = make_ready()
     first = FakeProvider()

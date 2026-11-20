@@ -417,6 +417,23 @@ def publish_clip(
     job_id = str(payload.get("job_id") or "")
     post_id = str(payload.get("post_id") or payload.get("id") or "")
     url = str(payload.get("url") or payload.get("post_url") or "")
+
+    # A single send may fan out to several networks, so Upload-Post returns the
+    # outcome per platform under ``results``. Lift the first usable link so a
+    # posted clip records where it actually landed instead of an empty URL.
+    results = payload.get("results")
+    if isinstance(results, dict):
+        for key in (plan.platform, *plan.platforms, *results.keys()):
+            entry = results.get(key)
+            if not isinstance(entry, dict):
+                continue
+            if not post_id:
+                post_id = str(entry.get("post_id") or entry.get("id") or "")
+            if not url:
+                url = str(entry.get("url") or entry.get("post_url") or "")
+            if url:
+                break
+
     mark_uploaded(
         clip_id,
         url=url,
