@@ -223,6 +223,40 @@ def test_run_stops_the_monitor_when_interrupted() -> None:
     assert calls["publish"] == []
 
 
+# --------------------------------------------------------- monitor construction
+
+
+def test_start_monitor_maps_options_and_normalises_demo(monkeypatch) -> None:
+    from clipbait import live as live_mod
+
+    started: list[str] = []
+    monkeypatch.setattr(live_mod, "start", lambda monitor_id: started.append(monitor_id))
+
+    from clipbait.autopilot import start_monitor
+
+    monitor_id = start_monitor(
+        "demo", "Demo room", AutopilotOptions(threshold=3.5, max_clips=3, hashtags=("#gta6",))
+    )
+    monitor = db.get_monitor(monitor_id)
+    assert monitor["url"] == "demo://live"
+    assert monitor["chat_provider"] == "demo"
+    assert monitor["options"]["spike_threshold"] == 3.5
+    assert monitor["options"]["max_clips"] == 3
+    assert monitor["options"]["hashtags"] == ["#gta6"]
+    assert started == [monitor_id]
+
+
+def test_start_monitor_defaults_the_clip_cap(monkeypatch) -> None:
+    from clipbait import live as live_mod
+
+    monkeypatch.setattr(live_mod, "start", lambda monitor_id: None)
+
+    from clipbait.autopilot import start_monitor
+
+    monitor_id = start_monitor("https://x/a", "Room", AutopilotOptions(max_clips=0))
+    assert db.get_monitor(monitor_id)["options"]["max_clips"] == 8
+
+
 # ------------------------------------------------------------- money integration
 
 # Clips made here live in the session-wide test database, where every other
