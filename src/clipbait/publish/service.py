@@ -20,11 +20,12 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .. import db, storage
+from .. import db, media, storage
 from ..config import Settings, get_settings
 from ..money import QueueItem, build_queue, load_campaign, mark_uploaded, queue_item
 from ..money.queue import apply_campaign_copy
 from ..virality.regions import get_region, platform_limits
+from .compact import compact_for_upload
 from .provider import (
     ProviderError,
     PublishResult,
@@ -381,8 +382,14 @@ def publish_clip(
         )
 
     try:
+        upload_video = compact_for_upload(plan.video)
+    except media.MediaError as exc:  # a failed shrink must not block the post
+        log.warning("compaction failed (%s); sending the render as-is", exc)
+        upload_video = plan.video
+
+    try:
         payload = provider.upload(
-            video=plan.video,
+            video=upload_video,
             fields=plan.fields,
             platforms=list(plan.platforms),
             scheduled_date=plan.scheduled_date or None,
