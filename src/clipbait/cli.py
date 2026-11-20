@@ -603,6 +603,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
         use_best_times=not args.no_best_times,
         offset_minutes=args.offset,
         republish=args.republish,
+        compact=bool(getattr(args, "compact", False)),
     )
     provider = upload_post_provider(user=args.user)
 
@@ -895,6 +896,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     publish_cmd.add_argument(
         "--republish", action="store_true", help="re-send clips already marked posted"
+    )
+    publish_cmd.add_argument(
+        "--compact",
+        action="store_true",
+        help="shrink the upload body to 720p first (smaller, lower quality)",
     )
     publish_cmd.add_argument("--json", action="store_true")
     publish_cmd.set_defaults(func=cmd_publish)

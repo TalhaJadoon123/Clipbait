@@ -58,6 +58,7 @@ class PublishOptions:
     offset_minutes: int | None = None
     republish: bool = False
     language: str = ""
+    compact: bool = False  # shrink the body before upload (costs resolution)
 
 
 @dataclass(frozen=True)
@@ -381,11 +382,15 @@ def publish_clip(
             error="no Upload-Post profile: pass --user or set UPLOAD_POST_USER",
         )
 
-    try:
-        upload_video = compact_for_upload(plan.video)
-    except media.MediaError as exc:  # a failed shrink must not block the post
-        log.warning("compaction failed (%s); sending the render as-is", exc)
-        upload_video = plan.video
+    upload_video = plan.video
+    if options.compact:
+        # Off by default: a smaller body uploads faster, but at the cost of
+        # resolution. Only shrink the render when the operator asks for it.
+        try:
+            upload_video = compact_for_upload(plan.video)
+        except media.MediaError as exc:  # a failed shrink must not block the post
+            log.warning("compaction failed (%s); sending the render as-is", exc)
+            upload_video = plan.video
 
     try:
         payload = provider.upload(

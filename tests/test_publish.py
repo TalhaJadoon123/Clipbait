@@ -383,6 +383,18 @@ def test_live_publish_sends_once_and_marks_the_clip() -> None:
     assert uploaded["scheduled_for"]
 
 
+def test_publish_sends_the_full_quality_render() -> None:
+    # Compaction is opt-in: the posted body is the render, not a shrunk copy.
+    clip = make_ready()
+    provider = FakeProvider()
+
+    publish_clip(clip["id"], options=PublishOptions(live=True), provider=provider)
+
+    sent = provider.calls[0]["video"]
+    assert sent.name.endswith(".mp4")
+    assert not sent.name.endswith(".upload.mp4")
+
+
 def test_per_platform_result_link_is_recorded() -> None:
     # Upload-Post nests the outcome per network, so a posted clip must pick the
     # link out of results.<platform> rather than storing an empty URL.
