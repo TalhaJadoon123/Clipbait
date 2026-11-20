@@ -444,3 +444,22 @@ def test_grab_timestamp_rejects_nonsense():
     for bad in ("", "abc", "1:2:3:4"):
         with pytest.raises(ValueError):
             parse_timestamp(bad)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (None, []),
+        ("", []),
+        ("#gta6", ["gta6"]),
+        ("gta6", ["gta6"]),
+        ("#gta6 #kaicenat", ["gta6", "kaicenat"]),
+        ("gta6,kaicenat", ["gta6", "kaicenat"]),
+        ("#gta6, kai cenat", ["gta6", "kai cenat"]),
+        ("#gta6 #GTA6", ["gta6"]),
+    ],
+)
+def test_parse_hashtags(text, expected):
+    from clipbait.cli import parse_hashtags
+
+    assert parse_hashtags(text) == expected

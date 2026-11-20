@@ -696,6 +696,7 @@ def process_live_moment(
     highlight = Highlight(
         start=0.0,
         end=max(1.0, info.duration),
+        keywords=list(options.hashtags),
         title=title[:80],
         hook=(moment.get("hook") or title)[:120],
         reason=reason,

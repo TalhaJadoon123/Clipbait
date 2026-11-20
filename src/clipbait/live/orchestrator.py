@@ -447,6 +447,7 @@ class LiveRunner:
                         "caption_preset": self.options.caption_preset,
                         "reframe_mode": self.options.reframe_mode,
                         "language": self.options.language,
+                        "hashtags": list(self.options.hashtags),
                         "region": self.options.region,
                         "platform": self.options.platform,
                     },

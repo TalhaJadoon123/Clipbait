@@ -125,3 +125,23 @@ def test_a_rate_only_file_prices_but_does_not_claim_a_rules_check(tmp_path) -> N
     assert not rules.from_file
     report = check_clip(tmp_path / "missing.mp4", rules=rules)
     assert any("sets no rules" in warning for warning in report.warnings)
+
+
+def test_hook_already_in_the_caption_is_not_printed_twice(tmp_path) -> None:
+    """The export caption starts with the hook; the report must not repeat it."""
+    video = make_video(tmp_path / "good.mp4", seconds=3, size="1080x1920", fps=30)
+    hook = 'On stream: "Oh shit, it is on fire"'
+    caption = f'{hook}\n\nspeech and audio both spiked\n\n#shorts #gta6'
+
+    report = check_clip(video, caption=caption, hook=hook)
+
+    assert report.as_dict()["caption"].count(hook) == 1
+
+
+def test_a_hook_absent_from_the_caption_is_still_checked(tmp_path) -> None:
+    video = make_video(tmp_path / "good.mp4", seconds=3, size="1080x1920", fps=30)
+    hook = "buy fake followers now"
+
+    report = check_clip(video, caption="just a normal caption", hook=hook)
+
+    assert "buy fake followers now" in report.as_dict()["caption"]

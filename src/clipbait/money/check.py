@@ -260,7 +260,12 @@ def check_clip(
     """Inspect a finished file against the campaign. Never raises on bad media."""
     target = Path(path).expanduser()
     active = rules or default_campaign()
-    copy = "\n".join(part for part in (hook, caption) if part).strip()
+    # The caption already starts with the hook, so joining them blindly prints
+    # the hook twice in the report. Only prepend a hook the caption lacks.
+    copy = (caption or "").strip()
+    hook_text = (hook or "").strip()
+    if hook_text and hook_text not in copy:
+        copy = f"{hook_text}\n{copy}".strip()
     rows: list[CheckRow] = []
     warnings: list[str] = []
     info: media.MediaInfo | None = None

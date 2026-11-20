@@ -314,6 +314,7 @@ Chat sources:
 ```bash
 clipbait live demo --threshold 2.5          # chat + on-stream detection
 clipbait live <url> --no-content            # chat only
+clipbait live <url> --language en --hashtags "#kaicenat #gta6"
 clipbait queue                              # what to post, where, for how much
 ```
 
@@ -324,7 +325,7 @@ guessing, so Clipbait also takes an exact window:
 
 ```bash
 clipbait grab "https://www.youtube.com/watch?v=..." --at 1:24:30 --seconds 40 \
-  --language en --campaign data/campaigns/kai-gta6.md --export
+  --language en --hashtags "#kaicenat #gta6" --campaign data/campaigns/kai-gta6.md --export
 ```
 
 That fetches only those 40 seconds (yt-dlp range support, so a 40s grab of a

@@ -92,6 +92,9 @@ class ProjectOptions(BaseModel):
     chat_overlay: bool = False
     aspect: str = "9:16"
     llm: bool = True
+    # Tags that describe this stream or campaign (``#kaicenat #gta6``). They
+    # outrank the region's evergreen hashtags in the generated copy.
+    hashtags: list[str] = Field(default_factory=list)
     region: str = "US"
     platform: Literal["tiktok", "reels", "shorts", "linkedin", "x"] = "tiktok"
     memes: bool = True
@@ -234,6 +237,7 @@ class MonitorOptions(BaseModel):
     # known to be in one language: a guess on music-heavy gameplay audio can
     # come back as Portuguese and caption an English stream in the wrong words.
     language: str = "auto"
+    hashtags: list[str] = Field(default_factory=list)
 
 
 class LiveMonitor(BaseModel):

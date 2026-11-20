@@ -44,7 +44,9 @@ def _hashtags(region: RegionProfile, keywords: list[str], platform: str) -> list
     tags: list[str] = []
     junk = {"right", "first", "thing", "things", "part", "people", "video", "make", "made",
             "going", "really", "actually", "every", "always", "never", "about", "there", "here"}
-    for tag in [*region.hashtags, *[k.replace(" ", "") for k in keywords]]:
+    # Specific first: "#kaicenat #gta6" tells a viewer (and the platform) what
+    # this is. The region's evergreen tags are a fallback, not the headline.
+    for tag in [*[k.replace(" ", "") for k in keywords], *region.hashtags]:
         cleaned = tag.strip().lstrip("#")
         if not cleaned or cleaned.lower() in junk or len(cleaned) < 4:
             continue

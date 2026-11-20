@@ -191,6 +191,34 @@ def parse_timestamp(text: str) -> float:
     return max(0.0, sign * total)
 
 
+def parse_hashtags(text: str | None) -> list[str]:
+    """Turn ``"#gta6, kai cenat"`` into clean ``["gta6", "kai cenat"]`` tags.
+
+    Commas separate tags, and a bare ``#`` starts a new one, so both
+    ``--hashtags a,b`` and ``--hashtags "#a #b"`` work. A leading ``#`` is
+    dropped because the packaging layer adds it; keeping it would make
+    ``##gta6``. A multi-word phrase stays whole here and is collapsed later.
+    """
+    if not text:
+        return []
+    segments: list[str] = []
+    for segment in text.split(","):
+        segment = segment.strip()
+        if not segment:
+            continue
+        if "#" in segment.lstrip("#"):
+            segments.extend(part for part in segment.split("#") if part.strip())
+        else:
+            segments.append(segment)
+    tags: list[str] = []
+    for chunk in segments:
+        cleaned = chunk.strip().lstrip("#").strip()
+        if not cleaned or cleaned.lower() in {t.lower() for t in tags}:
+            continue
+        tags.append(cleaned)
+    return tags
+
+
 def cmd_grab(args: argparse.Namespace) -> int:
     """Clip exactly the moment a human pointed at."""
     from .ingest import source_kind_for
@@ -217,6 +245,7 @@ def cmd_grab(args: argparse.Namespace) -> int:
         captions=not args.no_captions,
         hook_titles=not args.no_hooks,
         language=args.language,
+        hashtags=parse_hashtags(getattr(args, "hashtags", None)),
         region=args.region,
         platform=args.platform,
     )
@@ -278,6 +307,7 @@ def cmd_live(args: argparse.Namespace) -> int:
         max_clips=args.max_clips,
         buffer_seconds=args.buffer_seconds,
         language=args.language,
+        hashtags=parse_hashtags(getattr(args, "hashtags", None)),
     )
     monitor = db.create_monitor(
         {
@@ -549,6 +579,10 @@ def build_parser() -> argparse.ArgumentParser:
     grab.add_argument("--preset", default="default")
     grab.add_argument("--reframe", default="auto", choices=["auto", "center", "blur", "split"])
     grab.add_argument("--language", default="auto", help="speech language, e.g. en")
+    grab.add_argument(
+        "--hashtags",
+        help="tags for this stream, e.g. '#kaicenat #gta6'; they drive the copy",
+    )
     grab.add_argument("--region", default="US")
     grab.add_argument(
         "--platform", default="tiktok", choices=["tiktok", "reels", "shorts", "linkedin", "x"]
@@ -591,6 +625,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--language",
         default="auto",
         help="speech language of the stream, e.g. en; auto guesses once per window",
+    )
+    live_cmd.add_argument(
+        "--hashtags",
+        help="tags for this stream, e.g. '#kaicenat #gta6'; they drive the clip copy",
     )
     live_cmd.add_argument(
         "--buffer-seconds",

@@ -335,6 +335,32 @@ def mark_rejected(clip_id: str, *, reason: str = "") -> dict | None:
     return db.update("clips", clip_id, {"meta": meta})
 
 
+def apply_campaign_copy(
+    caption: str,
+    rules,
+) -> tuple[str, dict]:
+    """Add the copy the campaign requires, and say what was added.
+
+    A brief that demands ``#gta6`` and ``@kaicenat`` is not asking for
+    inspiration. Mechanically appending them turns a bundle that would be
+    rejected for a missing tag into one that is ready, while the check still
+    reports the final caption it will actually submit.
+    """
+    text = (caption or "").strip()
+    added: dict[str, list[str] | str] = {"hashtags": [], "mention": ""}
+    missing_tags = [
+        tag for tag in getattr(rules, "required_hashtags", ()) if tag.lower() not in text.lower()
+    ]
+    mention = getattr(rules, "required_mention", "") or ""
+    if mention and mention.lower() not in text.lower():
+        text = f"{mention} {text}".strip()
+        added["mention"] = mention
+    if missing_tags:
+        text = f"{text}\n\n{' '.join(missing_tags)}".strip()
+        added["hashtags"] = missing_tags
+    return text + ("\n" if text else ""), added
+
+
 def mark_uploaded(clip_id: str, *, url: str | None = None, platform: str | None = None) -> dict | None:
     """Record that the operator posted this clip. Idempotent."""
     clip = db.get_clip(clip_id)
@@ -380,8 +406,8 @@ def export_bundle(
     if video.resolve() != source.resolve():
         shutil.copy2(source, video)
 
-    caption = item.caption
-    (target / "caption.txt").write_text(caption + "\n", encoding="utf-8")
+    caption, added = apply_campaign_copy(item.caption, rules)
+    (target / "caption.txt").write_text(caption, encoding="utf-8")
     (target / "metadata.json").write_text(
         json.dumps(
             {
@@ -390,7 +416,9 @@ def export_bundle(
                 "title": item.title,
                 "hook": item.hook,
                 "description": item.description,
-                "hashtags": list(item.hashtags),
+                "hashtags": list(
+                    dict.fromkeys([*item.hashtags, *(added.get("hashtags") or [])])
+                ),
                 "caption": caption,
                 "recommended_platform": item.platform,
                 "source_platform": item.source_platform,
@@ -399,6 +427,7 @@ def export_bundle(
                 "score": item.score,
                 "expected_usd": item.expected_usd,
                 "usd_range": [item.usd_low, item.usd_high],
+                "campaign_copy_added": added,
                 "expected_views": item.expected_views,
                 "views_range": [item.views_low, item.views_high],
                 "rpm": item.rpm,

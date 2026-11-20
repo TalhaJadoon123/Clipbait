@@ -691,3 +691,37 @@ def test_grab_cuts_from_a_local_file_without_a_url(tmp_path, transcript, monkeyp
     info = pipeline.media.probe(target)
     assert 2.5 <= info.duration <= 3.6
     assert clip["reason"] == "local cut"
+
+
+def test_process_live_moment_uses_the_stream_hashtags(transcript, monkeypatch):
+    """Stream tags seed the copy so the clip is about this stream, not a genre."""
+    project = make_project(None, clips=1, hashtags=["kaicenat", "gta6"])
+    moment_dir = storage.project_dir(project["id"]) / "source"
+    moment_dir.mkdir(parents=True, exist_ok=True)
+    capture = make_video(moment_dir / "moment.mp4", seconds=4, size="320x180")
+    db.update("projects", project["id"], {"source_path": storage.relative(capture)})
+
+    fixed_transcriber(monkeypatch, transcript)
+    captured: dict = {}
+
+    def fake_render(clip_id, *, transcript=None, on_progress=None):
+        captured["clip"] = db.get_clip(clip_id)
+        return captured["clip"]
+
+    monkeypatch.setattr(pipeline, "render_clip_record", fake_render)
+
+    pipeline.process_live_moment(
+        project["id"],
+        {
+            "monitor_id": "mon_tags",
+            "moment_id": "mom_tags",
+            "title": "Chat went wild",
+            "reason": "rate spike",
+            "score": 8.4,
+            "messages": [{"t": 1.0, "author": "a", "text": "CLIP IT"}],
+        },
+    )
+
+    tags = {tag.lower() for tag in captured["clip"]["hashtags"]}
+    assert "#kaicenat" in tags
+    assert "#gta6" in tags

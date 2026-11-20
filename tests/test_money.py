@@ -288,3 +288,40 @@ def test_project_match_keeps_one_campaign_out_of_the_other() -> None:
     matched = build_queue(min_score=0.0, project_match="kai cenat")
     assert matched.items and all("kai cenat" in item.project_title.lower() for item in matched.items)
     assert not build_queue(min_score=0.0, project_match="nothing-like-this").items
+
+
+def test_export_adds_the_tags_the_campaign_requires(tmp_path) -> None:
+    """A missing required hashtag is a rejection; add it, do not just report it."""
+    clip = make_ready(score=72.0, start=5_000.0, end=5_040.0)
+    rules = tmp_path / "campaign.md"
+    rules.write_text(
+        "min_seconds: 7\nmax_seconds: 60\n"
+        "required_hashtags: #gta6 #kaicenat\nrequired_mention: @clipmoney\n",
+        encoding="utf-8",
+    )
+
+    bundle = export_bundle(clip["id"], campaign=rules)
+
+    folder = storage.resolve(bundle["dir"])
+    caption = (folder / "caption.txt").read_text(encoding="utf-8")
+    assert "#gta6" in caption and "#kaicenat" in caption
+    assert "@clipmoney" in caption
+    failures = bundle["check"]["failures"]
+    assert not any("hashtag" in name or "mention" in name for name in failures), failures
+
+    metadata = json.loads((folder / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["campaign_copy_added"]["mention"] == "@clipmoney"
+    assert set(metadata["campaign_copy_added"]["hashtags"]) == {"#gta6", "#kaicenat"}
+    assert "#gta6" in metadata["hashtags"]
+
+
+def test_export_does_not_duplicate_copy_the_caption_already_has() -> None:
+    from clipbait.money.check import CampaignRules
+    from clipbait.money.queue import apply_campaign_copy
+
+    rules = CampaignRules(required_hashtags=("#gta6",), required_mention="@clipmoney")
+    caption, added = apply_campaign_copy("@clipmoney what a play #gta6", rules)
+
+    assert caption.count("#gta6") == 1
+    assert caption.count("@clipmoney") == 1
+    assert added == {"hashtags": [], "mention": ""}
