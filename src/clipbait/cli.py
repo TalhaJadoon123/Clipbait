@@ -577,8 +577,8 @@ def cmd_publish(args: argparse.Namespace) -> int:
     from .publish import (
         PublishOptions,
         publish_clip,
+        publish_provider,
         publish_queue,
-        upload_post_provider,
     )
 
     settings = get_settings()
@@ -605,7 +605,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
         republish=args.republish,
         compact=bool(getattr(args, "compact", False)),
     )
-    provider = upload_post_provider(user=args.user)
+    provider = publish_provider(user=args.user)
 
     if args.clips:
         results = [

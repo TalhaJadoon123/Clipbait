@@ -124,6 +124,9 @@ class UploadPostProvider:
     """Upload-Post REST client: publish a video, ask for the best hours."""
 
     name = "upload-post"
+    # Upload-Post addresses a *profile* inside the account, so a run needs a
+    # username. Postiz addresses a connected channel directly and does not.
+    requires_profile = True
 
     def __init__(
         self,

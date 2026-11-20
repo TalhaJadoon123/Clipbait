@@ -6,12 +6,14 @@ this package decides when and how it leaves the machine.
     plan  -> what will be posted, where, at which window (no network)
     send  -> one multipart request per clip, idempotent, marked once posted
 
-Upload-Post is the first provider because it reaches TikTok, Instagram, YouTube,
-LinkedIn, X and more with one request and reports the account's measured best
-hours. Everything is dry by default; a run only sends when ``live`` is set.
+Two backends can carry the last mile, chosen by ``CLIPBAIT_PUBLISH_PROVIDER``:
+Upload-Post (metered; one request reaches TikTok, Instagram, YouTube, LinkedIn,
+X and more, and reports measured best hours) or Postiz (self-hosted, unmetered).
+Everything is dry by default; a run only sends when ``live`` is set.
 """
 
 from .compact import MAX_UPLOAD_BYTES, compact_for_upload
+from .postiz import PostizProvider
 from .provider import (
     PLATFORM_MAP,
     ProviderError,
@@ -21,10 +23,13 @@ from .provider import (
 )
 from .service import (
     ClipPlan,
+    Provider,
     PublishOptions,
     plan_clip,
     platform_fields,
+    postiz_provider,
     publish_clip,
+    publish_provider,
     publish_queue,
     resolve_schedule,
     upload_post_provider,
@@ -44,6 +49,8 @@ __all__ = [
     "PLATFORM_MAP",
     "REGION_TIMEZONES",
     "ClipPlan",
+    "PostizProvider",
+    "Provider",
     "ProviderError",
     "PublishOptions",
     "PublishResult",
@@ -54,7 +61,9 @@ __all__ = [
     "parse_windows",
     "plan_clip",
     "platform_fields",
+    "postiz_provider",
     "publish_clip",
+    "publish_provider",
     "publish_queue",
     "region_timezone",
     "resolve_schedule",

@@ -26,6 +26,7 @@ from ..money import QueueItem, build_queue, load_campaign, mark_uploaded, queue_
 from ..money.queue import apply_campaign_copy
 from ..virality.regions import get_region, platform_limits
 from .compact import compact_for_upload
+from .postiz import PostizProvider
 from .provider import (
     ProviderError,
     PublishResult,
@@ -39,6 +40,11 @@ from .windows import (
     spread_minutes,
     windows_from_best_times,
 )
+
+# Either backend the service can drive. Both answer the same three questions --
+# am I ready, here is the file, here are the best hours -- so the money loop
+# never branches on which one is behind it.
+Provider = UploadPostProvider | PostizProvider
 
 log = logging.getLogger("clipbait.publish")
 
@@ -105,7 +111,10 @@ class ClipPlan:
 def upload_post_provider(
     settings: Settings | None = None, *, user: str | None = None
 ) -> UploadPostProvider:
-    """Build the provider from the environment. No key means a dry-only run."""
+    """Build the Upload-Post provider from the environment.
+
+    No key means a dry-only run.
+    """
     settings = settings or get_settings()
     return UploadPostProvider(
         settings.upload_post_api_key,
@@ -113,6 +122,39 @@ def upload_post_provider(
         user=user or settings.upload_post_user or "",
         timeout=settings.upload_post_timeout,
     )
+
+
+def postiz_provider(
+    settings: Settings | None = None, *, user: str | None = None
+) -> PostizProvider:
+    """Build the Postiz provider from the environment.
+
+    Postiz is self-hosted and unmetered, but it needs no profile username: a
+    post names a connected channel, so ``user`` is accepted and ignored.
+    """
+    settings = settings or get_settings()
+    return PostizProvider(
+        settings.postiz_api_key,
+        base_url=settings.postiz_api_url,
+        user=user or "",
+        timeout=settings.upload_post_timeout,
+    )
+
+
+def publish_provider(
+    settings: Settings | None = None, *, user: str | None = None
+) -> Provider:
+    """Build whichever backend ``CLIPBAIT_PUBLISH_PROVIDER`` selects.
+
+    One knob picks the last mile: ``upload_post`` (metered, one request reaches
+    many networks) or ``postiz`` (self-hosted, unlimited). An unknown value
+    falls back to Upload-Post rather than failing a live run at the door.
+    """
+    settings = settings or get_settings()
+    choice = (settings.publish_provider or "upload_post").strip().lower()
+    if choice == "postiz":
+        return postiz_provider(settings, user=user)
+    return upload_post_provider(settings, user=user)
 
 
 # ----------------------------------------------------------------------- copy
@@ -196,7 +238,7 @@ def resolve_schedule(
     clip_id: str,
     *,
     options: PublishOptions,
-    provider: UploadPostProvider | None,
+    provider: Provider | None,
 ) -> tuple[str, str, str]:
     """Pick the post time. Returns ``(scheduled_date, timezone, source)``.
 
@@ -246,7 +288,7 @@ def plan_clip(
     clip_id: str,
     *,
     options: PublishOptions | None = None,
-    provider: UploadPostProvider | None = None,
+    provider: Provider | None = None,
 ) -> ClipPlan:
     """Build the post for one clip without sending anything."""
     options = options or PublishOptions()
@@ -314,11 +356,11 @@ def publish_clip(
     clip_id: str,
     *,
     options: PublishOptions | None = None,
-    provider: UploadPostProvider | None = None,
+    provider: Provider | None = None,
 ) -> PublishResult:
     """Plan one clip, then either report the plan or send it."""
     options = options or PublishOptions()
-    provider = provider or upload_post_provider(user=options.user)
+    provider = provider or publish_provider(user=options.user)
 
     try:
         plan = plan_clip(clip_id, options=options, provider=provider)
@@ -355,6 +397,13 @@ def publish_clip(
         )
 
     if not provider.ready:
+        if provider.name == "postiz":
+            missing = "no Postiz API key: set POSTIZ_API_KEY to publish for real"
+        else:
+            missing = (
+                "no Upload-Post API key: set UPLOAD_POST_API_KEY "
+                "(and UPLOAD_POST_USER) to publish for real"
+            )
         return PublishResult(
             ok=False,
             dry_run=False,
@@ -364,12 +413,9 @@ def publish_clip(
             scheduled_date=plan.scheduled_date,
             timezone=plan.timezone,
             source=plan.source,
-            error=(
-                "no Upload-Post API key: set UPLOAD_POST_API_KEY "
-                "(and UPLOAD_POST_USER) to publish for real"
-            ),
+            error=missing,
         )
-    if not (options.user or provider.user):
+    if getattr(provider, "requires_profile", True) and not (options.user or provider.user):
         return PublishResult(
             ok=False,
             dry_run=False,
@@ -467,7 +513,7 @@ def publish_clip(
 def publish_queue(
     *,
     options: PublishOptions | None = None,
-    provider: UploadPostProvider | None = None,
+    provider: Provider | None = None,
     limit: int = 10,
     min_score: float = 0.0,
     project_match: str | None = None,

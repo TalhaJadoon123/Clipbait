@@ -402,7 +402,7 @@ def test_publish_monitor_forwards_now_and_platform(monkeypatch) -> None:
         return []
 
     monkeypatch.setattr(publish_module, "publish_queue", fake_publish_queue)
-    monkeypatch.setattr(publish_module, "upload_post_provider", lambda: None)
+    monkeypatch.setattr(publish_module, "publish_provider", lambda: None)
 
     publish_monitor(
         "mon_forward",

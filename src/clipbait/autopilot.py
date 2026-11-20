@@ -254,7 +254,7 @@ def export_monitor(monitor_id: str, options: AutopilotOptions) -> int:
 
 def publish_monitor(monitor_id: str, options: AutopilotOptions) -> int:
     """Hand this monitor's ready clips to the publisher. Dry unless live."""
-    from .publish import PublishOptions, publish_queue, upload_post_provider
+    from .publish import PublishOptions, publish_provider, publish_queue
 
     results = publish_queue(
         options=PublishOptions(
@@ -266,7 +266,7 @@ def publish_monitor(monitor_id: str, options: AutopilotOptions) -> int:
             # clip's recommended platform that the account lacks.
             platforms=(options.platform,),
         ),
-        provider=upload_post_provider(),
+        provider=publish_provider(),
         limit=50,
         min_score=options.min_score,
         monitor_id=monitor_id,
