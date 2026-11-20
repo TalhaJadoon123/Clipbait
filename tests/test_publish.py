@@ -438,6 +438,29 @@ def test_publish_queue_returns_one_result_per_ready_clip() -> None:
     assert all(result.ok for result in results)
 
 
+def test_plan_clip_falls_back_when_best_times_is_unavailable() -> None:
+    clip = make_ready()
+    # Key present but the account is not connected yet: the provider refuses,
+    # the plan must fall back to the region playbook, not fail the run.
+    provider = FakeProvider(error="account_not_connected")
+
+    plan = plan_clip(clip["id"], options=PublishOptions(), provider=provider)
+
+    assert plan.source == "region-window"
+    assert plan.scheduled_date
+
+
+def test_no_best_times_flag_skips_the_provider_entirely() -> None:
+    clip = make_ready()
+    provider = FakeProvider(best_times=[19, 20, 21])
+
+    plan = plan_clip(
+        clip["id"], options=PublishOptions(use_best_times=False), provider=provider
+    )
+
+    assert plan.source == "region-window"
+
+
 def test_platform_override_changes_the_destination() -> None:
     clip = make_ready()
     provider = FakeProvider()
