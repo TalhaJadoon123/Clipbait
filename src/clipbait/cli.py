@@ -319,6 +319,7 @@ def cmd_live(args: argparse.Namespace) -> int:
         # footage. The live moment is a gameplay slice, which reads flat without
         # a cutaway.
         meme_inserts=not getattr(args, "no_meme_inserts", False),
+        chat_only_clips=getattr(args, "chat_only_clips", False),
     )
     monitor = db.create_monitor(
         {
@@ -814,6 +815,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-meme-inserts",
         action="store_true",
         help="keep the footage pure (no meme b-roll cutaways); inserts are on by default",
+    )
+    live_cmd.add_argument(
+        "--chat-only-clips",
+        action="store_true",
+        help="also clip raw chat spikes; by default a clip needs speech/action on stream",
     )
     live_cmd.add_argument(
         "--no-content",

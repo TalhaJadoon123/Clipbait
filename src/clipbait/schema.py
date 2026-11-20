@@ -244,6 +244,10 @@ class MonitorOptions(BaseModel):
     meme_inserts: bool = True
     meme_insert_seconds: float = Field(default=2.0, ge=0.8, le=5.0)
     meme_max_inserts: int = Field(default=2, ge=1, le=6)
+    # Chat is a reflex, not the moment: a chat spike only becomes a clip when
+    # something actually happens on the stream (speech, loudness, or action).
+    # Set this to clip raw chat spikes anyway.
+    chat_only_clips: bool = False
 
 
 class LiveMonitor(BaseModel):

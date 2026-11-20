@@ -403,15 +403,32 @@ class LiveRunner:
         return title, reason
 
     def _capture(self, candidate, moment: dict, title: str) -> None:
-        # The moment may have been fused with a second detector since trigger.
         stored = db.get("moments", moment["id"]) or moment
-        start = float(stored.get("start", candidate.start))
         end = float(stored.get("end", candidate.end))
-        signal = SpikeSignal(**(stored.get("signal") or candidate.signal.model_dump()))
-        # Let the post-roll finish before cutting the buffer.
+        # Let the post-roll finish. This also gives the on-stream detector one
+        # more window to fuse speech/loudness/action into a chat-triggered
+        # moment before we decide whether it is worth cutting.
         while not self._stop.is_set() and self.elapsed() < end + 1.5:
             time.sleep(0.5)
         if not self.recorder:
+            return
+
+        # Re-read after the wait: a chat spike may have become a fused moment.
+        stored = db.get("moments", moment["id"]) or stored
+        start = float(stored.get("start", candidate.start))
+        end = float(stored.get("end", candidate.end))
+        signal = SpikeSignal(**(stored.get("signal") or candidate.signal.model_dump()))
+
+        if not self._clipworthy(signal):
+            self._capture_skipped(
+                moment["id"],
+                stored,
+                signal,
+                (start, end),
+                start,
+                end,
+                note="chat spike only: no speech, loudness or action on the stream",
+            )
             return
 
         # The ring buffer only starts once the stream resolves, so an early
@@ -574,6 +591,20 @@ class LiveRunner:
             self.monitor_id,
             {"type": "capture_skipped", "moment_id": moment_id, "error": error[:300]},
         )
+
+    def _clipworthy(self, signal: SpikeSignal) -> bool:
+        """A chat spike is a reflex; a clip needs something on the stream.
+
+        Chat still decides *when* to look, and a moment that fuses with the
+        on-stream detector passes. A chat-only moment is recorded for the
+        operator but never becomes a postable clip, because it has no speech,
+        loudness or action to show. ``chat_only_clips`` opts back in.
+        """
+        if getattr(self.options, "chat_only_clips", False):
+            return True
+        if signal.origin != "chat":
+            return True
+        return max(float(signal.speech), float(signal.loudness), float(signal.action)) > 0
 
     @staticmethod
     def _reason_text(signal: SpikeSignal, score: float) -> str:

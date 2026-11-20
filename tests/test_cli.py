@@ -175,6 +175,7 @@ def live_args(source: str = "demo", **overrides) -> argparse.Namespace:
         "no_captions": False,
         "no_chat_overlay": False,
         "no_content": False,
+        "chat_only_clips": False,
         "content_threshold": 2.5,
         "max_clips": 8,
         "buffer_seconds": 420,

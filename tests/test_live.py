@@ -100,6 +100,17 @@ class FakeDetector:
         return [1, 2, 3]
 
 
+def confirmed_candidate(**overrides) -> MomentCandidate:
+    """A chat spike the stream actually backed up: speech is present on stream.
+
+    A chat-only spike is deliberately *not* clipped (see ``LiveRunner._clipworthy``).
+    Capture-path tests use this helper to represent the confirmed moment.
+    """
+    base = candidate()
+    signal = base.signal.model_copy(update={"speech": 3.0})
+    return dataclasses.replace(base, signal=signal, **overrides)
+
+
 def make_monitor(**options) -> dict:
     return db.create_monitor(
         {
@@ -727,7 +738,7 @@ def test_live_runner_captures_a_spike(monkeypatch, tmp_path):
             [ChatMessage(t=5.2, author="a", text="CLIP IT")]
         ),
     )
-    spike = candidate()
+    spike = confirmed_candidate()
     runner.detector = FakeDetector(spike)
     monkeypatch.setattr(runner, "elapsed", lambda: 1000.0)
 
@@ -869,7 +880,7 @@ def test_live_runner_capture_failure_is_published(monkeypatch):
         "clipbait.live.orchestrator.resolve_chat_source",
         lambda url, provider, key: FakeChat([ChatMessage(t=5.2, text="W")]),
     )
-    runner.detector = FakeDetector(candidate())
+    runner.detector = FakeDetector(confirmed_candidate())
     monkeypatch.setattr(runner, "elapsed", lambda: 1000.0)
 
     events: list[dict] = []
@@ -905,7 +916,7 @@ def test_live_runner_unexpected_capture_error_is_published(monkeypatch):
         "clipbait.live.orchestrator.resolve_chat_source",
         lambda url, provider, key: FakeChat([ChatMessage(t=5.2, text="W")]),
     )
-    runner.detector = FakeDetector(candidate())
+    runner.detector = FakeDetector(confirmed_candidate())
     monkeypatch.setattr(runner, "elapsed", lambda: 1000.0)
 
     events: list[dict] = []
@@ -935,7 +946,7 @@ def test_capture_clamps_a_moment_to_the_ring_buffer(monkeypatch):
         lambda kind, fn, **kwargs: submitted.append({"kind": kind, **kwargs}) or {"id": "job_1"},
     )
     # Recorder only has 6.0 onward, so the head of the moment is trimmed.
-    spike = dataclasses.replace(candidate(), start=2.0, end=12.0, trigger_at=12.0)
+    spike = dataclasses.replace(confirmed_candidate(), start=2.0, end=12.0, trigger_at=12.0)
     moment = db.create_moment(
         {
             "monitor_id": monitor["id"],
@@ -973,7 +984,7 @@ def test_capture_skips_a_moment_the_buffer_never_saw(monkeypatch):
     monkeypatch.setattr(
         "clipbait.jobs.submit", lambda *a, **k: pytest.fail("nothing to render")
     )
-    spike = candidate()  # 5.0-9.0, long before the buffer starts at 120
+    spike = confirmed_candidate()  # 5.0-9.0, long before the buffer starts at 120
     moment = db.create_moment(
         {
             "monitor_id": monitor["id"],
@@ -991,6 +1002,52 @@ def test_capture_skips_a_moment_the_buffer_never_saw(monkeypatch):
     assert any(event["type"] == "capture_skipped" for event in events)
     stored = db.get("moments", moment["id"])
     assert "ring buffer" in stored["signal"]["capture_error"]
+
+
+def test_a_chat_only_spike_is_not_clipped(monkeypatch):
+    """Chat says *when* to look; the stream must say something to cut."""
+    monitor = make_monitor()
+    runner = LiveRunner(monitor)
+    runner.recorder = FakeRecorder(window=(0.0, 60.0))
+    monkeypatch.setattr(runner, "elapsed", lambda: 1000.0)
+
+    events: list[dict] = []
+    monkeypatch.setattr(
+        "clipbait.live.orchestrator._publish", lambda mid, event: events.append(event)
+    )
+    monkeypatch.setattr(
+        "clipbait.jobs.submit", lambda *a, **k: pytest.fail("a chat reflex is not a clip")
+    )
+    spike = candidate()  # chat only: speech, loudness and action are all zero
+    moment = db.create_moment(
+        {
+            "monitor_id": monitor["id"],
+            "start": spike.start,
+            "end": spike.end,
+            "score": spike.score,
+            "signal": spike.signal.model_dump(),
+            "messages": [m.model_dump() for m in spike.messages],
+        }
+    )
+
+    runner._capture(spike, moment, "chat only")
+
+    assert not runner.recorder.slices
+    assert any(event["type"] == "capture_skipped" for event in events)
+    stored = db.get("moments", moment["id"])
+    assert "chat spike only" in stored["signal"]["capture_error"]
+
+
+def test_chat_only_clips_can_be_opted_into():
+    runner = LiveRunner(make_monitor(chat_only_clips=True))
+    assert runner._clipworthy(SpikeSignal(rate=5.0, origin="chat")) is True
+
+
+def test_a_chat_signal_with_stream_evidence_is_clipworthy():
+    runner = LiveRunner(make_monitor())
+    assert runner._clipworthy(SpikeSignal(rate=5.0, origin="chat")) is False
+    assert runner._clipworthy(SpikeSignal(rate=5.0, speech=1.0, origin="chat")) is True
+    assert runner._clipworthy(SpikeSignal(speech=2.0, origin="speech")) is True
 
 
 def test_hls_recorder_rebases_the_first_segment_onto_the_monitor_clock(monkeypatch, tmp_path):
@@ -1268,7 +1325,7 @@ def test_a_live_clip_inherits_the_stream_language(monkeypatch):
 
     monkeypatch.setattr("clipbait.db.create_project", spy)
 
-    spike = dataclasses.replace(candidate(), start=2.0, end=12.0, trigger_at=12.0)
+    spike = dataclasses.replace(confirmed_candidate(), start=2.0, end=12.0, trigger_at=12.0)
     moment = db.create_moment(
         {
             "monitor_id": monitor["id"],
@@ -1305,7 +1362,7 @@ def test_a_live_clip_carries_the_stream_hashtags(monkeypatch):
 
     monkeypatch.setattr("clipbait.db.create_project", spy)
 
-    spike = dataclasses.replace(candidate(), start=2.0, end=12.0, trigger_at=12.0)
+    spike = dataclasses.replace(confirmed_candidate(), start=2.0, end=12.0, trigger_at=12.0)
     moment = db.create_moment(
         {
             "monitor_id": monitor["id"],
