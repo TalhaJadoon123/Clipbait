@@ -397,8 +397,10 @@ clipbait autopilot --source "https://youtube.com/watch?v=..." --rounds 0  # unti
 ```
 
 Each round it finds the biggest live room for `--query` (or watches the fixed
-`--source`), monitors it for `--minutes` **or** until `--max-clips` clips render
-(whichever comes first), stops the monitor, packages what is ready, and — only
+`--source`), monitors it for `--minutes` **or** until `--max-clips` clips have
+finished rendering (whichever comes first; a clip row appears the moment a moment
+is detected but renders on a thread, so only ready clips count and the round
+briefly waits out anything still in flight), stops the monitor, packages what is ready, and — only
 with `--live` — hands that round's clips to `publish` at their windows. Then it
 cools down `--cooldown` seconds and picks the next room it has not already
 watched.

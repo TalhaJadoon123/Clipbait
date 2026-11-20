@@ -334,8 +334,9 @@ clipbait autopilot --source "https://youtube.com/watch?v=..." --rounds 0   # unt
 ```
 
 Each round it discovers the biggest live room (or watches `--source`),
-monitors it for `--minutes` **or** until `--max-clips` clips render, whichever
-comes first, stops the monitor, packages that round's clips, and — only with
+monitors it for `--minutes` **or** until `--max-clips` clips have finished
+rendering, whichever comes first (only ready clips count, and a round drains
+renders still in flight), stops the monitor, packages that round's clips, and — only with
 `--live` — posts them at their windows. Then it cools down and picks the next
 room it has not already watched. Without `--live` it is a full dry loop:
 discover, watch, clip and package, but send nothing.
