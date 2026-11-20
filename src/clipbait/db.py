@@ -288,6 +288,10 @@ def list_clips(project_id: str) -> list[dict]:
     return [_decode(row) for row in rows]
 
 
+def update_clip(clip_id: str, **fields: Any) -> dict[str, Any] | None:
+    return update("clips", clip_id, fields)
+
+
 def delete_clips(project_id: str) -> None:
     with connect() as conn:
         conn.execute("DELETE FROM clips WHERE project_id = ?", (project_id,))

@@ -538,6 +538,38 @@ def cmd_queue(args: argparse.Namespace) -> int:
     return 0
 
 
+# ------------------------------------------------------------------ recaption
+
+
+def cmd_recaption(args: argparse.Namespace) -> int:
+    from .recaption import recaption
+
+    settings = get_settings()
+    settings.ensure_dirs()
+    db.init_db()
+
+    changes = recaption(apply=args.apply, limit=args.limit)
+    if args.json:
+        print(
+            json.dumps(
+                {"applied": bool(args.apply), "count": len(changes), "changes": changes},
+                indent=2,
+            )
+        )
+        return 0
+    if not changes:
+        print("no clips need recaptioning")
+        return 0
+    verb = "recaptioned" if args.apply else "would recaption"
+    tail = "" if args.apply else " (dry run; pass --apply to write)"
+    print(f"{verb} {len(changes)} clip(s){tail}")
+    for change in changes:
+        print(f"  {change['clip_id']}  {change['title'][:44]}")
+        print(f"    before: {change['before'][:88] or '(empty)'}")
+        print(f"    after : {change['after'][:88] or '(empty)'}")
+    return 0
+
+
 # -------------------------------------------------------------------- publish
 
 
@@ -816,6 +848,16 @@ def build_parser() -> argparse.ArgumentParser:
     queue_cmd.add_argument("--url", help="posted URL for --mark")
     queue_cmd.add_argument("--platform", help="platform for --mark")
     queue_cmd.set_defaults(func=cmd_queue)
+
+    recaption_cmd = sub.add_parser(
+        "recaption", help="re-derive captions the detector wrote for itself"
+    )
+    recaption_cmd.add_argument(
+        "--apply", action="store_true", help="write the changes; without it, a dry run"
+    )
+    recaption_cmd.add_argument("--limit", type=int, default=0, help="stop after this many clips")
+    recaption_cmd.add_argument("--json", action="store_true")
+    recaption_cmd.set_defaults(func=cmd_recaption)
 
     publish_cmd = sub.add_parser(
         "publish", help="post ready clips to your accounts, at the best window"

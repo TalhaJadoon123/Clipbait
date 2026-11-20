@@ -153,6 +153,10 @@ clipbait queue --campaign data/campaigns/clipmoney.md   # price at the brief's r
 clipbait queue --export
 clipbait queue --mark clip_abc123 --url "https://tiktok.com/@me/video/1"
 
+# Re-derive captions the detector wrote for itself (dry run unless --apply)
+clipbait recaption
+clipbait recaption --apply
+
 # Post them to your accounts, at the best window (dry run unless --live)
 clipbait publish                                 # plan every ready clip, send nothing
 clipbait publish clip_abc123 --at 2026-11-21T19:30 --timezone America/New_York

@@ -119,6 +119,17 @@ README.md         what to post, where, the expected range, and the check
 
 No absolute paths are returned: `dir` is relative to the data directory.
 
+The caption body is the *spoken* line, never the detector's own note. Clips made
+before that rule went in store the note as the description ("5.0/s chat velocity
+(5.4σ over baseline)"), so `clipbait recaption` rewrites those from the clip's
+quote -- leaving `reason` on the clip for explainability -- and is a dry run
+until `--apply`:
+
+```bash
+clipbait recaption            # show the before/after for every ready clip
+clipbait recaption --apply    # write the fixes
+```
+
 ---
 
 ## Before you post: the check
