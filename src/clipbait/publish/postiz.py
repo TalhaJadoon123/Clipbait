@@ -13,6 +13,7 @@ provider reports ``ready == False`` and the caller says so in plain words.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -252,7 +253,9 @@ class PostizProvider:
 
         body = {
             "type": "schedule" if scheduled_date else "now",
-            "date": scheduled_date or "1970-01-01T00:00:00.000Z",
+            # Postiz still expects a real timestamp on a "now" post; an epoch
+            # date reads as a long-past schedule. Send the current instant.
+            "date": scheduled_date or datetime.now(UTC).isoformat(),
             "shortLink": False,
             "tags": [],
             "posts": posts,

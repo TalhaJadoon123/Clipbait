@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -169,6 +170,9 @@ def test_postiz_upload_uploads_the_file_then_creates_a_post(monkeypatch, tmp_pat
     assert api.uploads[0]["files"]["file"][2] == "video/mp4"
     body = api.posts[0]
     assert body["type"] == "now"  # no schedule -> publish immediately
+    # Postiz wants a real timestamp even on a "now" post, not an epoch sentinel.
+    assert not body["date"].startswith("1970")
+    assert datetime.fromisoformat(body["date"]) > datetime(2020, 1, 1, tzinfo=UTC)
     assert len(body["posts"]) == 1
     target = body["posts"][0]
     assert target["integration"]["id"] == "int_yt"

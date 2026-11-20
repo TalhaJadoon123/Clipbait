@@ -113,9 +113,19 @@ CLIPBAIT_MEME_SEARCH_VIDEO="media_formats.mp4.url"
 For Giphy:
 
 ```bash
+CLIPBAIT_MEME_SEARCH_URL="https://api.giphy.com/v1/gifs/search"
+CLIPBAIT_MEME_SEARCH_AUTH="query"
 CLIPBAIT_MEME_SEARCH_RESULTS="data"
-CLIPBAIT_MEME_SEARCH_VIDEO="images.original.mp4"
+CLIPBAIT_MEME_SEARCH_VIDEO="images.hd.mp4,images.original.mp4"
+CLIPBAIT_MEME_SEARCH_RATING="pg-13"
 ```
+
+`CLIPBAIT_MEME_SEARCH_VIDEO` may name **several** dot paths, best-first. Each
+result is probed left to right and the first path that yields a URL wins, so a
+result that happens to carry an HD render contributes it while one that does not
+falls back to its original. That matters for quality: Giphy's default asset is a
+~200px thumbnail, and the cutaway fills the frame, so prefer the largest source
+a result actually has.
 
 Every value on the video path may also be an object containing `url` or `mp4`;
 the provider unwraps it. If a result has no usable URL, the next one is tried.
@@ -136,6 +146,13 @@ spoken audio and its captions run continuously underneath.
 resolution, the clip frame rate, `yuv420p`, silent, and trimmed to the window
 length (looping the source if it is shorter). A missing or too-short asset is
 skipped, so a bad insert degrades to "no meme" rather than a failed render.
+
+The meme is scaled to **fit** the frame (never cropped) and centred over a
+blurred, slightly darkened copy of itself that fills the frame. Cover-cropping a
+small landscape GIF into a 9:16 clip would both blow it up several times and
+slice off most of its width — unreadable — so the whole meme is kept and the
+blurred fill hides the low source resolution. A phone-shaped meme simply fills
+the frame with no visible fill.
 
 ## Inspecting the result
 

@@ -742,8 +742,28 @@ def test_json_or_text_falls_back_to_a_url():
     assert provider._json_or_text(Response()) == "https://cdn/x.mp4"
 
 
+# Importing clipbait auto-loads a developer's .env, so a real Giphy/Tenor key
+# in there would silently change these tests. Pin the meme keys to their code
+# defaults and let each test opt in explicitly.
+_MEME_DEFAULTS = dict(
+    meme_provider="auto",
+    meme_api_url=None,
+    meme_api_key=None,
+    meme_search_url=None,
+    meme_search_key=None,
+    meme_search_auth="bearer",
+    meme_search_header="Authorization",
+    meme_search_key_param="api_key",
+    meme_search_query_param="q",
+    meme_search_results="results",
+    meme_search_video="url",
+    meme_search_limit=8,
+    meme_search_rating="",
+)
+
+
 def settings_with(**overrides):
-    return dataclasses.replace(config.get_settings(), **overrides)
+    return dataclasses.replace(config.get_settings(), **{**_MEME_DEFAULTS, **overrides})
 
 
 def test_api_provider_requires_a_url(tmp_path):

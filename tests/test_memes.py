@@ -202,8 +202,14 @@ def test_graph_chains_multiple_inserts() -> None:
 
 
 def test_auto_provider_is_fixture_without_an_api_url() -> None:
-    settings = get_settings()
-    assert not settings.meme_api_url, "the test env must not configure a meme API"
+    # Importing clipbait auto-loads a developer's .env, so pin the settings to a
+    # clean "nothing configured" state instead of trusting the ambient env.
+    from dataclasses import replace
+
+    settings = replace(
+        get_settings(), meme_api_url=None, meme_search_url=None, meme_provider="auto"
+    )
+    assert not settings.meme_api_url
     provider = get_meme_provider(settings)
     assert isinstance(provider, FixtureMemeProvider)
 
@@ -213,6 +219,47 @@ def test_api_provider_reports_name_and_availability() -> None:
     assert provider.name == "api"
     # No URL configured in tests -> not available, and generate() explains why.
     assert provider.available() is False
+
+
+def test_search_provider_prefers_the_first_resolvable_video_path(monkeypatch) -> None:
+    # Giphy offers small fixed_height and a bigger original/hd; the ordered
+    # paths must pick the best that a result actually has, per result.
+    from dataclasses import replace
+
+    from clipbait.memes import HttpMemeProvider
+
+    settings = replace(
+        get_settings(),
+        meme_search_url="https://api.giphy.com/v1/gifs/search",
+        meme_search_auth="query",
+        meme_search_key="k",
+        meme_search_results="data",
+        meme_search_video="images.hd.mp4,images.original.mp4",
+    )
+    provider = HttpMemeProvider(settings)
+
+    class _Resp:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {
+                "data": [
+                    {
+                        "images": {
+                            "hd": {"mp4": "https://cdn/hd1.mp4"},
+                            "original": {"mp4": "https://cdn/o1.mp4"},
+                        }
+                    },
+                    {"images": {"original": {"mp4": "https://cdn/o2.mp4"}}},
+                ]
+            }
+
+    monkeypatch.setattr("clipbait.memes.providers.httpx.get", lambda *a, **k: _Resp())
+    # Item 1 has hd -> take hd; item 2 has only original -> fall back to original.
+    assert provider._search("shock") == ["https://cdn/hd1.mp4", "https://cdn/o2.mp4"]
+    # An unset path list still means a single "url" path.
+    assert HttpMemeProvider(replace(settings, meme_search_video=""))._video_paths() == ["url"]
 
 
 def test_request_cache_key_is_stable_and_specific() -> None:

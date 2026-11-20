@@ -368,20 +368,41 @@ class HttpMemeProvider:
             raise MemeError("meme search response had no result list")
 
         found: list[str] = []
+        paths = self._video_paths()
         for item in results:
-            value = _dot_get(item, self.settings.meme_search_video)
-            if isinstance(value, dict):
-                value = value.get("url") or value.get("mp4") or _find_url(value)
-            if isinstance(value, str) and value.startswith(("http://", "https://")):
-                if value not in found:
-                    found.append(value)
-            elif not found:
+            value: str | None = None
+            # Try the paths in order: the first that yields a real URL wins, so
+            # a high-res asset (e.g. Giphy ``hd.mp4``) is preferred over the
+            # small thumbnail when a search returns both.
+            for path in paths:
+                candidate = _dot_get(item, path)
+                if isinstance(candidate, dict):
+                    candidate = (
+                        candidate.get("url") or candidate.get("mp4") or _find_url(candidate)
+                    )
+                if isinstance(candidate, str) and candidate.startswith(("http://", "https://")):
+                    value = candidate
+                    break
+            if value and value not in found:
+                found.append(value)
+            elif not value and not found:
                 # Fall back to any URL in the result, so a slightly different
                 # provider shape still contributes a candidate.
                 fallback = _find_url(item)
                 if fallback:
                     found.append(fallback)
         return found[: max(1, self.settings.meme_search_limit)]
+
+    def _video_paths(self) -> list[str]:
+        """The candidate video dot-paths, in preference order.
+
+        ``CLIPBAIT_MEME_SEARCH_VIDEO`` may name one path (``url``) or several,
+        best first (``hd.mp4,original.mp4``), so a provider that offers more
+        than one resolution contributes the largest it has.
+        """
+        raw = self.settings.meme_search_video or "url"
+        paths = [part.strip() for part in raw.split(",") if part.strip()]
+        return paths or ["url"]
 
 
 class FixtureMemeProvider:
