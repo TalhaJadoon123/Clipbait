@@ -14,6 +14,7 @@ from .check import (
 from .queue import (
     Queue,
     QueueItem,
+    apply_campaign_copy,
     build_queue,
     export_bundle,
     mark_rejected,
@@ -28,6 +29,7 @@ __all__ = [
     "CheckRow",
     "Queue",
     "QueueItem",
+    "apply_campaign_copy",
     "build_queue",
     "check_clip",
     "default_campaign",

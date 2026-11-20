@@ -220,6 +220,12 @@ clipbait streams --query "gta 6" --watch
 # Gate the upload on the campaign's actual rules
 clipbait campaign
 clipbait check clip_abc123 --campaign data/campaigns/clipmoney.md
+
+# Post it: dry run first, then for real, at the best window
+clipbait publish                                  # plan everything, send nothing
+clipbait publish --live --campaign data/campaigns/clipmoney.md
+clipbait publish clip_abc123 --at 2026-11-21T19:30 --timezone America/New_York
+clipbait publish clip_abc123 --live --now         # skip the window, post now
 ```
 
 Output is one line per clip:
@@ -315,8 +321,59 @@ SOURCE="https://youtube.com/watch?v=..." ./scripts/earn.sh   # skip discovery
 ```
 
 It finds the biggest live room for the query, monitors it with on-stream
-detection, then writes an export bundle for every clip above `MIN_SCORE`. It
-does **not** upload: the last mile is a human with a verified account.
+detection, then writes an export bundle for every clip above `MIN_SCORE`. Pass
+`PUBLISH=1` to also hand the bundles to `clipbait publish --live`.
+
+## Publishing
+
+The queue decides *what* to post. `publish` decides *when* and *where*, and
+sends it. It is dry by default -- it prints the destination, the caption and the
+exact moment for every clip and sends nothing until `--live` is passed.
+
+```bash
+clipbait publish                                  # dry run over the queue
+clipbait publish --live --limit 5                 # send the top 5
+clipbait publish clip_abc123 --live --now         # this one, immediately
+clipbait publish clip_abc123 --at 2026-11-21T19:30 --timezone America/New_York
+```
+
+It publishes through [Upload-Post](https://upload-post.com), which posts to
+TikTok, Instagram, YouTube, LinkedIn, X, Facebook and more from one request. Two
+environment variables turn it on:
+
+```bash
+export UPLOAD_POST_API_KEY=...        # from the Upload-Post dashboard
+export UPLOAD_POST_USER=your_profile  # profile holding your connected accounts
+```
+
+**Where the time comes from.** The clip is scheduled with `scheduled_date` +
+`timezone`, so Upload-Post publishes it at that moment without Clipbait staying
+up. The moment is chosen in this order:
+
+1. `--at` -- an exact local time you name (`source: manual`).
+2. `--now` -- post as soon as the provider accepts it (`source: now`).
+3. the account's **measured** best hours from Upload-Post, when the account has
+   enough history (`source: account-best-times`).
+4. the region profile's curated posting windows, read in the market's own
+   timezone, e.g. `18:00-22:00` `America/New_York` for `US`
+   (`source: region-window`).
+
+`--timezone` overrides which zone the windows are read in; `--offset` picks the
+minute inside the window (default: a stable per-clip spread, so a batch does not
+all fire at once).
+
+**Copy is shaped per network.** Upload-Post reads `title` as the caption on the
+short-form networks and `description` on YouTube/LinkedIn/Facebook. `publish`
+sends both, plus the platform override fields, so one caption block is right
+everywhere instead of truncated on whichever network is unlucky: a YouTube title
+stays inside its limit, an X post stays a single tweet, and the campaign's
+required hashtags/mention are merged in before the send.
+
+**Idempotent, and honest.** Every send carries
+`Idempotency-Key: clipbait-<clip_id>`; a clip is marked posted only after the
+provider accepts it. A network refusal (rate limit, reconnect needed, a cap) is
+reported with its `error_code` and leaves the clip unposted so the next run can
+retry. Nothing is ever marked posted by a dry run.
 
 ## Posting is the last mile
 
@@ -324,15 +381,18 @@ Everything up to here is automated. What is not automated, and should not be
 pretended otherwise:
 
 1. Join the campaign server (Clip Money: <https://discord.gg/FnCMF4KMAT>).
-2. Connect the TikTok/Reels/Shorts account that will post, and let the platform
-   report audience stats. The account gets a country tier, and some campaigns
-   only accept certain tiers.
+2. Connect the TikTok/Reels/Shorts account that will post **to Upload-Post** (so
+   `publish` can reach it), and let the platform report audience stats. The
+   account gets a country tier, and some campaigns only accept certain tiers.
 3. Opt into a campaign and **read its brief**, then paste the real rules into
    `data/campaigns/<campaign>.md` (see the check above). The brief is the only
    source of truth for duration, required hashtags, mention, sound and whether
    footage must come from the campaign's clip bank.
-4. Post from that account, then submit the link in the campaign's submit
-   channel. Approval is usually within an hour; views update every two hours.
+4. Post from that account -- `clipbait publish --live --campaign
+   data/campaigns/<campaign>.md` sends the bundles at their windows -- then
+   submit the link in the campaign's submit channel. Submission stays manual:
+   it is the claim that ties a post to a campaign, and only you can make it.
+   Approval is usually within an hour; views update every two hours.
 5. Payment goes to PayPal when the campaign ends. Keep view/like counts public
    or tracking cannot verify them.
 

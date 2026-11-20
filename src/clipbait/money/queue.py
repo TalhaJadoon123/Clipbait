@@ -361,8 +361,21 @@ def apply_campaign_copy(
     return text + ("\n" if text else ""), added
 
 
-def mark_uploaded(clip_id: str, *, url: str | None = None, platform: str | None = None) -> dict | None:
-    """Record that the operator posted this clip. Idempotent."""
+def mark_uploaded(
+    clip_id: str,
+    *,
+    url: str | None = None,
+    platform: str | None = None,
+    scheduled_for: str | None = None,
+    job_id: str = "",
+    dry_run: bool = False,
+) -> dict | None:
+    """Record that this clip was posted, or handed to a publisher to post.
+
+    Idempotent. ``scheduled_for`` and ``job_id`` make a scheduled post visible
+    in the clip's metadata, so a queued-but-not-yet-live upload is not mistaken
+    for one that already published.
+    """
     clip = db.get_clip(clip_id)
     if not clip:
         return None
@@ -371,6 +384,9 @@ def mark_uploaded(clip_id: str, *, url: str | None = None, platform: str | None 
         "at": datetime.now(UTC).isoformat(),
         "url": (url or "").strip(),
         "platform": (platform or "").strip(),
+        "scheduled_for": (scheduled_for or "").strip(),
+        "job_id": (job_id or "").strip(),
+        "dry_run": bool(dry_run),
     }
     return db.update("clips", clip_id, {"meta": meta})
 

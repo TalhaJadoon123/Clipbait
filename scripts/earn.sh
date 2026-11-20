@@ -6,10 +6,12 @@
 #   QUERY="kai cenat" MINUTES=45 MAX_CLIPS=6 ./scripts/earn.sh
 #   SOURCE="https://youtube.com/watch?v=..." ./scripts/earn.sh   # skip discovery
 #   CAMPAIGN=data/campaigns/clipmoney.md ./scripts/earn.sh       # check the real brief
+#   PUBLISH=1 ./scripts/earn.sh                                  # also post them
 #
-# The script never uploads. It leaves one folder per clip in data/exports/ with
-# the video, caption, metadata and check result. Posting is a human action on
-# the operator's own verified account.
+# By default it never uploads: it leaves one folder per clip in data/exports/
+# with the video, caption, metadata and check result. With PUBLISH=1 it then
+# hands those bundles to `clipbait publish --live`, which posts at each clip's
+# best window (needs UPLOAD_POST_API_KEY and UPLOAD_POST_USER).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -32,6 +34,7 @@ CONTENT_THRESHOLD="${CONTENT_THRESHOLD:-1.9}"
 PRESET="${PRESET:-hormozi}"
 REGION="${REGION:-US}"
 CAMPAIGN="${CAMPAIGN:-}"
+PUBLISH="${PUBLISH:-}"
 
 if [ -z "${SOURCE:-}" ]; then
   echo "== finding live rooms for: $QUERY"
@@ -76,3 +79,14 @@ fi
 echo
 echo "== files"
 ls -1dt data/exports/*/ 2>/dev/null | head -"$MAX_CLIPS" || true
+
+if [ -n "$PUBLISH" ]; then
+  echo
+  echo "== posting at each clip's best window"
+  if [ -n "$CAMPAIGN" ]; then
+    "$PY" -m clipbait.cli publish --live --limit "$MAX_CLIPS" --min-score "$MIN_SCORE" \
+      --campaign "$CAMPAIGN"
+  else
+    "$PY" -m clipbait.cli publish --live --limit "$MAX_CLIPS" --min-score "$MIN_SCORE"
+  fi
+fi

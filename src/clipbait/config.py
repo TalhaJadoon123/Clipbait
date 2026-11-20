@@ -91,6 +91,12 @@ class Settings:
     live_segment_seconds: int = 4
     live_default_provider: str = "auto"
     public_base_url: str = "http://localhost:8000"
+    # Publishing the last mile. Upload-Post reaches every connected network with
+    # one request and reports the account's measured best hours. No key means a
+    # dry-only run: the plan is printed, nothing leaves the machine.
+    upload_post_api_key: str | None = None
+    upload_post_base_url: str = "https://api.upload-post.com"
+    upload_post_user: str | None = None
     # Embedding-free product analytics: never phones home.
     telemetry: bool = False
     extra: dict[str, str] = field(default_factory=dict)
@@ -173,6 +179,10 @@ def get_settings() -> Settings:
         live_segment_seconds=max(2, _env_int("CLIPBAIT_LIVE_SEGMENT_SECONDS", 4)),
         live_default_provider=_env("CLIPBAIT_LIVE_CHAT_PROVIDER", "auto") or "auto",
         public_base_url=_env("CLIPBAIT_PUBLIC_BASE_URL", "http://localhost:8000") or "http://localhost:8000",
+        upload_post_api_key=_env("UPLOAD_POST_API_KEY"),
+        upload_post_base_url=_env("CLIPBAIT_UPLOAD_POST_URL", "https://api.upload-post.com")
+        or "https://api.upload-post.com",
+        upload_post_user=_env("UPLOAD_POST_USER"),
         telemetry=_env_bool("CLIPBAIT_TELEMETRY", False),
     )
 

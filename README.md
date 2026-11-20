@@ -151,6 +151,11 @@ clipbait queue --campaign data/campaigns/clipmoney.md   # price at the brief's r
 clipbait queue --export
 clipbait queue --mark clip_abc123 --url "https://tiktok.com/@me/video/1"
 
+# Post them to your accounts, at the best window (dry run unless --live)
+clipbait publish                                 # plan every ready clip, send nothing
+clipbait publish clip_abc123 --at 2026-11-21T19:30 --timezone America/New_York
+clipbait publish --live --campaign data/campaigns/clipmoney.md
+
 # Find live rooms by audience, then monitor the biggest one
 clipbait streams --query "gta 6" --limit 15
 clipbait streams --query "gta 6" --watch
@@ -299,7 +304,7 @@ Clipbait watches the chat **and** the stream itself.
 * **Fusion**: a chat spike and an on-stream moment within 12 seconds become one moment, one clip, with both sets of evidence.
 * **Pre-roll first**: default 25s before the trigger, 20s after. Tune with `--pre-roll` / `--post-roll` in `MonitorOptions`.
 * **Non-blocking**: rendering happens on a separate thread; chat and content detection keep running.
-* **Money layer**: every ready clip is priced by expected revenue and recommended platform, then exported as an upload bundle. See [`docs/MONEY.md`](docs/MONEY.md).
+* **Money layer**: every ready clip is priced by expected revenue and recommended platform, then exported as an upload bundle. [`clipbait publish`](#publishing) hands the bundle to your own accounts at the best window. See [`docs/MONEY.md`](docs/MONEY.md).
 
 Chat sources:
 
@@ -339,6 +344,42 @@ The demo generates a 4-minute synthetic stream locally, spikes chat three times,
 > Only clip streams you own or have permission to reuse. Respect platform terms and local law. See [Responsible use](#responsible-use).
 
 Details: [`docs/LIVE.md`](docs/LIVE.md) and [`docs/MONEY.md`](docs/MONEY.md).
+
+### Publishing
+
+The queue says *what* to post; `publish` handles *when* and *where*. It is dry by
+default: it prints the destination, the caption and the exact moment, and sends
+nothing.
+
+```bash
+clipbait publish                                  # dry run: plan the whole queue
+clipbait publish --live                           # send every ready clip
+clipbait publish clip_abc123 --live --now         # this one, immediately
+clipbait publish clip_abc123 --at 2026-11-21T19:30 --timezone America/New_York
+clipbait publish --live --platform shorts,reels   # force destinations
+```
+
+It posts through [Upload-Post](https://upload-post.com), which reaches TikTok,
+Instagram, YouTube, LinkedIn, X and more with one request. Set the key and the
+profile once:
+
+```bash
+export UPLOAD_POST_API_KEY=...        # from the Upload-Post dashboard
+export UPLOAD_POST_USER=your_profile  # the profile whose accounts you connected
+```
+
+**The window is picked from data, not a guess.** If the connected account has
+enough history, Clipbait asks Upload-Post for its *measured* best hours
+(`source: account-best-times`). Without them it falls back to the region's
+curated posting windows, interpreted in the market's own timezone
+(`source: region-window`). Either way the post is scheduled **on Upload-Post's
+side** with `scheduled_date` + `timezone`, so a single `--live` run is the whole
+automation: nothing has to stay running waiting for the hour to arrive.
+
+Every send is idempotent (`Idempotency-Key: clipbait-<clip_id>`), and a clip is
+only marked posted after the provider accepts it. A re-run returns the existing
+job instead of posting twice.
+
 
 ---
 

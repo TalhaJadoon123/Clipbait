@@ -7,6 +7,7 @@ The verbs, shortest first::
     clipbait live <url|demo>       # watch live chat, clip the spikes
     clipbait streams --query       # find the biggest live rooms right now
     clipbait queue --export        # rank ready clips, write upload bundles
+    clipbait publish --live        # post them to your accounts at the best window
     clipbait check <clip>          # pre-post check: will it be accepted?
     clipbait doctor                # what is installed, what is missing
 
@@ -58,6 +59,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"  [{mark}] {name:<16} {detail}")
     print(f"\n  transcriber : {caps.transcriber}")
     print(f"  llm         : {caps.llm_provider or 'none (heuristic ranking still works)'}")
+    publishing = "upload-post (key set)" if settings.upload_post_api_key else "upload-post (no key: dry run only)"
+    print(f"  publishing  : {publishing}")
     print(f"  data dir    : {settings.data_dir}")
     print(f"  database    : {settings.db_path}")
 
@@ -534,6 +537,92 @@ def cmd_queue(args: argparse.Namespace) -> int:
     return 0
 
 
+# -------------------------------------------------------------------- publish
+
+
+def cmd_publish(args: argparse.Namespace) -> int:
+    from .publish import (
+        PublishOptions,
+        publish_clip,
+        publish_queue,
+        upload_post_provider,
+    )
+
+    settings = get_settings()
+    settings.ensure_dirs()
+    db.init_db()
+
+    platforms = tuple(
+        part
+        for part in (getattr(args, "platform", None) or "")
+        .replace(",", " ")
+        .split()
+        if part
+    )
+    options = PublishOptions(
+        live=args.live,
+        at=args.at,
+        post_now=args.now,
+        timezone=args.timezone,
+        platforms=platforms,
+        campaign=args.campaign,
+        user=args.user,
+        use_best_times=not args.no_best_times,
+        offset_minutes=args.offset,
+        republish=args.republish,
+    )
+    provider = upload_post_provider(user=args.user)
+
+    if args.clips:
+        results = [
+            publish_clip(clip_id, options=options, provider=provider)
+            for clip_id in args.clips
+        ]
+    else:
+        results = publish_queue(
+            options=options,
+            provider=provider,
+            limit=args.limit,
+            min_score=args.min_score,
+            project_match=args.project_match,
+        )
+
+    if args.json:
+        print(json.dumps([result.as_dict() for result in results], indent=2))
+        return 0 if all(result.ok for result in results) else 1
+
+    mode = "LIVE" if args.live else "dry run"
+    key = "key set" if provider.ready else "no key"
+    print(f"{len(results)} clip(s) · {mode} · provider={provider.name} ({key})")
+    for result in results:
+        if result.source == "already-posted":
+            tail = f" -> {result.url}" if result.url else ""
+            print(f"  skip  {result.clip_id}  already posted{tail}")
+            continue
+        if not result.ok:
+            print(f"  FAIL  {result.clip_id}  {result.error}")
+            continue
+        verb = "send" if args.live else "plan"
+        when = result.scheduled_date or "now"
+        job = f"  job={result.job_id}" if result.job_id else ""
+        print(
+            f"  {verb}  {result.clip_id}  {result.platform:9s} "
+            f"{when} ({result.timezone}, {result.source})  {result.title[:44]}{job}"
+        )
+
+    scheduled = [result for result in results if result.ok and result.scheduled_date]
+    if not args.live:
+        print("\n  dry run: nothing sent. add --live to publish for real.")
+        if not provider.ready:
+            print("  set UPLOAD_POST_API_KEY and UPLOAD_POST_USER to publish.")
+    elif scheduled and not (args.now or args.at):
+        print(
+            "\n  scheduled on the provider's side; "
+            "no process needs to stay running for these to go out."
+        )
+    return 0 if all(result.ok for result in results) else 1
+
+
 # ---------------------------------------------------------------------- parser
 
 
@@ -659,6 +748,45 @@ def build_parser() -> argparse.ArgumentParser:
     queue_cmd.add_argument("--url", help="posted URL for --mark")
     queue_cmd.add_argument("--platform", help="platform for --mark")
     queue_cmd.set_defaults(func=cmd_queue)
+
+    publish_cmd = sub.add_parser(
+        "publish", help="post ready clips to your accounts, at the best window"
+    )
+    publish_cmd.add_argument("clips", nargs="*", help="clip ids; omit to publish the queue")
+    publish_cmd.add_argument(
+        "--live", action="store_true", help="actually send; without it, a dry run"
+    )
+    publish_cmd.add_argument("--limit", type=int, default=10, help="how many queue clips")
+    publish_cmd.add_argument("--min-score", type=float, default=0.0)
+    publish_cmd.add_argument("--project-match", help="only clips whose project title matches")
+    publish_cmd.add_argument(
+        "--campaign", help="campaign rules file: gates the copy and sets the rate"
+    )
+    publish_cmd.add_argument(
+        "--platform",
+        help="override destination(s): tiktok,reels,shorts,linkedin,x",
+    )
+    publish_cmd.add_argument("--at", help="post at this local time, e.g. 2026-11-21T19:30")
+    publish_cmd.add_argument(
+        "--now", action="store_true", help="post immediately instead of at a window"
+    )
+    publish_cmd.add_argument(
+        "--timezone", help="IANA zone for the window, e.g. America/New_York"
+    )
+    publish_cmd.add_argument("--user", help="Upload-Post profile username")
+    publish_cmd.add_argument(
+        "--offset", type=int, help="minutes into the window to post (default: spread by clip)"
+    )
+    publish_cmd.add_argument(
+        "--no-best-times",
+        action="store_true",
+        help="skip the account's measured hours; use the region playbook",
+    )
+    publish_cmd.add_argument(
+        "--republish", action="store_true", help="re-send clips already marked posted"
+    )
+    publish_cmd.add_argument("--json", action="store_true")
+    publish_cmd.set_defaults(func=cmd_publish)
 
     check_cmd = sub.add_parser("check", help="pre-post check of a finished clip")
     check_cmd.add_argument("clip", help="clip id (clip_...) or path to an mp4")
