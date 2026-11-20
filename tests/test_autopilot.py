@@ -387,3 +387,29 @@ def test_publish_monitor_is_a_dry_run_unless_live() -> None:
 def test_publish_monitor_requires_a_source_of_clips() -> None:
     # A monitor with no clips publishes nothing, never fails.
     assert publish_monitor("mon_empty", AutopilotOptions(min_score=0.0)) == 0
+
+
+def test_publish_monitor_forwards_now_and_platform(monkeypatch) -> None:
+    # The loop must send to the network it was configured for, immediately when
+    # asked, instead of a clip's recommended platform at a best-time window.
+    from clipbait import publish as publish_module
+    from clipbait.publish import PublishOptions
+
+    seen: dict = {}
+
+    def fake_publish_queue(*, options, provider, limit, min_score, monitor_id):
+        seen["options"] = options
+        return []
+
+    monkeypatch.setattr(publish_module, "publish_queue", fake_publish_queue)
+    monkeypatch.setattr(publish_module, "upload_post_provider", lambda: None)
+
+    publish_monitor(
+        "mon_forward",
+        AutopilotOptions(min_score=0.0, post_now=True, platform="shorts"),
+    )
+
+    options = seen["options"]
+    assert isinstance(options, PublishOptions)
+    assert options.post_now is True
+    assert options.platforms == ("shorts",)

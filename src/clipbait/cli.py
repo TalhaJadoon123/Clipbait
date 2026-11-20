@@ -688,6 +688,7 @@ def cmd_autopilot(args: argparse.Namespace) -> int:
         min_score=args.min_score,
         campaign=args.campaign,
         live=args.live,
+        post_now=args.now,
         title=args.title or "",
     )
     if args.live and not settings.upload_post_api_key:
@@ -941,6 +942,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--live",
         action="store_true",
         help="post the clips for real; without it they are only packaged",
+    )
+    auto.add_argument(
+        "--now", action="store_true", help="post immediately instead of at the best window"
     )
     auto.add_argument("--title", help="title to give each round's monitor")
     auto.add_argument("--json", action="store_true")

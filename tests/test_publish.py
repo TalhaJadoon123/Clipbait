@@ -30,6 +30,7 @@ from clipbait.publish import (
     region_timezone,
     spread_minutes,
     upload_platform,
+    upload_post_provider,
     windows_from_best_times,
 )
 from clipbait.publish import provider as provider_module
@@ -488,3 +489,21 @@ def test_platform_override_changes_the_destination() -> None:
     )
     assert result.platform == "youtube"
     assert provider.calls[0]["platforms"] == ["youtube", "instagram"]
+
+
+def test_provider_factory_uses_the_configured_timeout() -> None:
+    # A vertical clip is tens of megabytes; a home uplink needs more than the
+    # library default before the client gives up on the body.
+    from dataclasses import replace
+
+    from clipbait.config import get_settings
+
+    settings = replace(
+        get_settings(),
+        upload_post_api_key="key",
+        upload_post_user="me",
+        upload_post_timeout=456.0,
+    )
+    provider = upload_post_provider(settings)
+    assert provider.timeout == 456.0
+    assert provider.user == "me"

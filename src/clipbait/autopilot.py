@@ -56,6 +56,7 @@ class AutopilotOptions:
     min_score: float = 35.0
     campaign: str | None = None
     live: bool = False  # publish for real (else package only)
+    post_now: bool = False  # send immediately; else schedule at the best window
     title: str = ""
 
 
@@ -256,7 +257,15 @@ def publish_monitor(monitor_id: str, options: AutopilotOptions) -> int:
     from .publish import PublishOptions, publish_queue, upload_post_provider
 
     results = publish_queue(
-        options=PublishOptions(live=options.live, campaign=options.campaign),
+        options=PublishOptions(
+            live=options.live,
+            campaign=options.campaign,
+            post_now=options.post_now,
+            # Post to the destination this run was set up for, so a loop
+            # configured for one connected network never falls back to a
+            # clip's recommended platform that the account lacks.
+            platforms=(options.platform,),
+        ),
         provider=upload_post_provider(),
         limit=50,
         min_score=options.min_score,

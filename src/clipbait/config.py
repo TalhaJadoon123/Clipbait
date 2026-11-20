@@ -97,6 +97,10 @@ class Settings:
     upload_post_api_key: str | None = None
     upload_post_base_url: str = "https://api.upload-post.com"
     upload_post_user: str | None = None
+    # Seconds before an upload request is abandoned. A vertical clip is tens of
+    # megabytes and a home uplink is often a few hundred KB/s, so the default
+    # leaves room for the body to arrive before the client gives up.
+    upload_post_timeout: float = 300.0
     # Embedding-free product analytics: never phones home.
     telemetry: bool = False
     extra: dict[str, str] = field(default_factory=dict)
@@ -183,6 +187,7 @@ def get_settings() -> Settings:
         upload_post_base_url=_env("CLIPBAIT_UPLOAD_POST_URL", "https://api.upload-post.com")
         or "https://api.upload-post.com",
         upload_post_user=_env("UPLOAD_POST_USER"),
+        upload_post_timeout=max(30.0, _env_float("CLIPBAIT_UPLOAD_POST_TIMEOUT", 300.0)),
         telemetry=_env_bool("CLIPBAIT_TELEMETRY", False),
     )
 

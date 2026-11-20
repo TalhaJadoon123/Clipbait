@@ -160,7 +160,11 @@ clipbait recaption --apply
 # Post them to your accounts, at the best window (dry run unless --live)
 clipbait publish                                 # plan every ready clip, send nothing
 clipbait publish clip_abc123 --at 2026-11-21T19:30 --timezone America/New_York
+clipbait publish clip_abc123 --now --live       # this one, immediately
 clipbait publish --live --campaign data/campaigns/clipmoney.md
+
+# Unattended: discover -> watch -> clip -> post. --now posts immediately.
+clipbait autopilot --query "gta 6" --platform shorts --now --live
 
 # Find live rooms by audience, then monitor the biggest one
 clipbait streams --query "gta 6" --limit 15

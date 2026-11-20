@@ -109,6 +109,7 @@ def upload_post_provider(
         settings.upload_post_api_key,
         base_url=settings.upload_post_base_url,
         user=user or settings.upload_post_user or "",
+        timeout=settings.upload_post_timeout,
     )
 
 
