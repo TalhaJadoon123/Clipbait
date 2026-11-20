@@ -450,6 +450,9 @@ class LiveRunner:
                         "hashtags": list(self.options.hashtags),
                         "region": self.options.region,
                         "platform": self.options.platform,
+                        "meme_inserts": self.options.meme_inserts,
+                        "meme_insert_seconds": self.options.meme_insert_seconds,
+                        "meme_max_inserts": self.options.meme_max_inserts,
                     },
                 }
             )

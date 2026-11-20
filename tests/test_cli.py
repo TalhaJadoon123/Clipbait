@@ -47,6 +47,7 @@ def process_args(source: str, **overrides) -> argparse.Namespace:
         "no_captions": False,
         "no_hooks": False,
         "no_memes": False,
+        "no_meme_inserts": False,
         "no_llm": True,
         "json": False,
     }
@@ -289,6 +290,27 @@ def test_project_options_follow_the_flags(monkeypatch, render_stub):
     assert options["hook_titles"] is False
     assert options["memes"] is False
     assert options["llm"] is False
+
+
+def test_meme_inserts_are_on_by_default(monkeypatch, render_stub):
+    # A raw gameplay slice reads flat in Shorts; b-roll cutaways are the default.
+    cli.cmd_process(process_args("https://example.com/v.mp4"))
+    project = db.get_project(render_stub[0]["project_id"])
+    assert project["options"]["meme_inserts"] is True
+
+
+def test_meme_inserts_can_be_turned_off(monkeypatch, render_stub):
+    cli.cmd_process(process_args("https://example.com/v.mp4", no_meme_inserts=True))
+    project = db.get_project(render_stub[0]["project_id"])
+    assert project["options"]["meme_inserts"] is False
+
+
+def test_live_monitor_wants_memes_in_shorts():
+    from clipbait.schema import MonitorOptions
+
+    options = MonitorOptions()
+    assert options.meme_inserts is True
+    assert options.meme_max_inserts >= 1
 
 
 def test_out_dir_is_reported(monkeypatch, render_stub, tmp_path, capsys):

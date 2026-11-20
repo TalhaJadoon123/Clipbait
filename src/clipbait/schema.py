@@ -238,6 +238,12 @@ class MonitorOptions(BaseModel):
     # come back as Portuguese and caption an English stream in the wrong words.
     language: str = "auto"
     hashtags: list[str] = Field(default_factory=list)
+    # Meme b-roll cutaways between spoken sentences. On for live: a raw gameplay
+    # slice reads flat in Shorts without a cutaway, and the operator asked for
+    # memes in every clip. Set ``--no-meme-inserts`` to keep the footage pure.
+    meme_inserts: bool = True
+    meme_insert_seconds: float = Field(default=2.0, ge=0.8, le=5.0)
+    meme_max_inserts: int = Field(default=2, ge=1, le=6)
 
 
 class LiveMonitor(BaseModel):

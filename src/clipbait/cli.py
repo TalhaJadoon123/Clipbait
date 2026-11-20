@@ -128,6 +128,9 @@ def cmd_process(args: argparse.Namespace) -> int:
         platform=args.platform,
         memes=not args.no_memes,
         llm=not args.no_llm,
+        # Memes are wanted in the Shorts, so the b-roll cutaways are on unless
+        # the operator explicitly asks for the untouched footage.
+        meme_inserts=not getattr(args, "no_meme_inserts", False),
     )
     project = db.create_project(
         {
@@ -312,6 +315,10 @@ def cmd_live(args: argparse.Namespace) -> int:
         buffer_seconds=args.buffer_seconds,
         language=args.language,
         hashtags=parse_hashtags(getattr(args, "hashtags", None)),
+        # Memes in every Short by default; ``--no-meme-inserts`` keeps the raw
+        # footage. The live moment is a gameplay slice, which reads flat without
+        # a cutaway.
+        meme_inserts=not getattr(args, "no_meme_inserts", False),
     )
     monitor = db.create_monitor(
         {
@@ -757,6 +764,11 @@ def build_parser() -> argparse.ArgumentParser:
     process.add_argument("--no-captions", action="store_true")
     process.add_argument("--no-hooks", action="store_true")
     process.add_argument("--no-memes", action="store_true")
+    process.add_argument(
+        "--no-meme-inserts",
+        action="store_true",
+        help="keep the footage pure (no meme b-roll cutaways); inserts are on by default",
+    )
     process.add_argument("--no-llm", action="store_true", help="force the offline ranker")
     process.add_argument("--json", action="store_true", help="print the result as JSON")
     process.set_defaults(func=cmd_process)
@@ -798,6 +810,11 @@ def build_parser() -> argparse.ArgumentParser:
     live_cmd.add_argument("--no-clip", action="store_true", help="detect only, do not render")
     live_cmd.add_argument("--no-captions", action="store_true")
     live_cmd.add_argument("--no-chat-overlay", action="store_true")
+    live_cmd.add_argument(
+        "--no-meme-inserts",
+        action="store_true",
+        help="keep the footage pure (no meme b-roll cutaways); inserts are on by default",
+    )
     live_cmd.add_argument(
         "--no-content",
         action="store_true",
