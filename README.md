@@ -383,6 +383,21 @@ export UPLOAD_POST_API_KEY=...        # from the Upload-Post dashboard
 export UPLOAD_POST_USER=your_profile  # the profile whose accounts you connected
 ```
 
+**Or self-host [Postiz](https://github.com/gitroomhq/postiz-app) for unlimited
+posts.** One install, no per-upload fee. Connect your channels in Postiz, copy
+an API key, and point Clipbait at it:
+
+```bash
+export CLIPBAIT_PUBLISH_PROVIDER=postiz
+export POSTIZ_API_KEY=...             # Postiz > Settings > API
+export CLIPBAIT_POSTIZ_API_URL=http://localhost:4007/api/public/v1
+```
+
+Postiz targets a connected channel rather than a profile, so `--user` is not
+needed, and it has no measured-best-hours endpoint: the region playbook picks
+the window. Everything else — idempotent sends, dry-run default, the clip only
+marked posted after acceptance — works the same.
+
 **The window is picked from data, not a guess.** If the connected account has
 enough history, Clipbait asks Upload-Post for its *measured* best hours
 (`source: account-best-times`). Without them it falls back to the region's
