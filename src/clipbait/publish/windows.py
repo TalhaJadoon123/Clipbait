@@ -96,9 +96,31 @@ def parse_window(text: str) -> Window | None:
     return (start, end)
 
 
+def _coerce_window(item) -> Window | None:
+    """A window given either as a string or as an already-parsed ``(start, end)``.
+
+    ``resolve_schedule`` hands ``next_posting_time`` windows that are already
+    tuples (from ``parse_windows`` / ``windows_from_best_times``), while an
+    operator passing a playbook string reaches it raw. Accepting both keeps the
+    two paths from silently disagreeing -- a re-parse of a tuple used to drop
+    every window and post at ``now + lead`` instead of the chosen slot.
+    """
+    if isinstance(item, (tuple, list)) and len(item) == 2:
+        try:
+            start, end = int(item[0]), int(item[1])
+        except (TypeError, ValueError):
+            return None
+        if start == end:
+            return None
+        if end < start:
+            end += 1440
+        return (start, end)
+    return parse_window(str(item))
+
+
 def parse_windows(windows) -> tuple[Window, ...]:
-    """Normalise, dedupe and sort a region's window strings."""
-    parsed = [w for w in (parse_window(str(item)) for item in windows or ()) if w]
+    """Normalise, dedupe and sort a region's windows (strings or pairs)."""
+    parsed = [w for w in (_coerce_window(item) for item in windows or ()) if w]
     return tuple(sorted(set(parsed)))
 
 

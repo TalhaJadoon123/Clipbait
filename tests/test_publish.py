@@ -139,6 +139,23 @@ def test_best_time_hours_become_windows_best_first() -> None:
     assert windows == ((780, 840), (1140, 1200))
 
 
+def test_parse_windows_accepts_already_parsed_pairs() -> None:
+    # resolve_schedule hands next_posting_time tuples, so re-parsing them must be
+    # a no-op rather than dropping every window (which posted at now + lead).
+    assert parse_windows([(1140, 1200), (780, 840)]) == ((780, 840), (1140, 1200))
+    assert parse_windows([(1140, 1200), "07:00-09:00", (1140, 1200)]) == (
+        (420, 540),
+        (1140, 1200),
+    )
+
+
+def test_next_posting_time_honours_parsed_best_time_windows() -> None:
+    now = datetime(2026, 11, 20, 15, 47, tzinfo=ZoneInfo("America/New_York"))
+    windows = windows_from_best_times([{"hour": 19}, {"hour": 20}, {"hour": 21}])
+    moment = next_posting_time(windows, now=now, offset_minutes=0)
+    assert moment.hour == 19  # the measured 19:00 window, not "now + lead"
+
+
 def test_next_posting_time_posts_soon_when_already_inside_a_window() -> None:
     now = datetime(2026, 11, 20, 19, 2, tzinfo=ZoneInfo("America/New_York"))
     moment = next_posting_time(["18:00-22:00"], now=now, offset_minutes=0)
