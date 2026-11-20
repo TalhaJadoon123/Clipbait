@@ -200,9 +200,14 @@ def analyze(
 
 def packaging_for(highlight: Highlight, analysis_meta: dict) -> dict:
     tags = analysis_meta.get("hashtags", {}).get(highlight.title) or _hashtags(highlight)
+    # The caption body is public copy: the spoken quote, not the detector's own
+    # note (``reason`` explains the pick to the operator and stays on the clip).
+    body = (highlight.quote or "").strip()
+    if body.lower() == (highlight.reason or "").strip().lower():
+        body = ""
     return {
         "title": highlight.title,
         "hook": highlight.hook,
-        "description": (highlight.reason or "")[:280],
+        "description": body[:280],
         "hashtags": tags,
     }

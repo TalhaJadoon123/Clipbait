@@ -489,6 +489,7 @@ def test_hashtags_and_packaging():
         end=20,
         title="Clip",
         hook="Hook",
+        quote="the line itself",
         reason="Reason",
         keywords=["growth", "ai", "ab"],
     )
@@ -500,7 +501,9 @@ def test_hashtags_and_packaging():
 
     packaged = packaging_for(highlight, {"hashtags": {"Clip": ["#custom"]}})
     assert packaged["hashtags"] == ["#custom"]
-    assert packaged["description"] == "Reason"
+    # The caption body is the spoken line, never the operator-facing reason.
+    assert packaged["description"] == "the line itself"
+    assert "Reason" not in packaged["description"]
     fallback = packaging_for(highlight, {})
     assert "shorts" in fallback["hashtags"]
 

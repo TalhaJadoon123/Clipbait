@@ -97,11 +97,22 @@ def test_medium_risk_memes_are_opt_in() -> None:
     assert len(permissive) >= len(conservative)
 
 
-def test_twist_memes_need_a_reason() -> None:
-    without_reason = build_variants(
-        highlight(reason=""), "Expectation: this is the claim", get_region("US"), "tiktok", limit=8
+def test_twist_memes_need_spoken_copy() -> None:
+    # The "Expectation/Reality" meme fills {twist} from what was said, so with no
+    # spoken copy it is skipped rather than naming the operator's reason.
+    without_copy = build_variants(
+        highlight(reason="a QA note"), "", get_region("US"), "tiktok", limit=8
     )
-    assert all("expectation" != variant["id"] for variant in without_reason)
+    assert all("expectation" != variant["id"] for variant in without_copy)
+
+
+def test_detector_reason_never_reaches_public_copy() -> None:
+    qa_note = "5.0/s chat velocity (5.06σ over baseline)"
+    variants = build_variants(highlight(reason=qa_note), TEXT, get_region("US"), "tiktok", limit=8)
+    assert variants
+    for variant in variants:
+        assert qa_note not in variant["description"]
+        assert qa_note not in variant["title"]
 
 
 def test_apply_pattern_collapses_literal_newlines() -> None:

@@ -39,6 +39,20 @@ def _title_case_hook(text: str, limit: int) -> str:
     return trimmed[:1].upper() + trimmed[1:] if trimmed else trimmed
 
 
+def _caption_body(highlight: Highlight, text: str, limit: int) -> str:
+    """Public caption copy: what was said, never the detector's own note.
+
+    ``highlight.reason`` explains a pick to the operator and is stored on the
+    clip; posting it reads like a QA log ("5.0/s chat velocity (5.06σ over
+    baseline)"). Prefer the spoken ``text``, fall back to the highlight's
+    quote, and emit nothing when there are no real words to show.
+    """
+    body = (text or "").strip() or (highlight.quote or "").strip()
+    if not body or body.lower() == (highlight.reason or "").strip().lower():
+        return ""
+    return _trim(body, limit)
+
+
 def _hashtags(region: RegionProfile, keywords: list[str], platform: str) -> list[str]:
     limit = platform_limits(platform)["hashtags"]
     tags: list[str] = []
@@ -81,6 +95,7 @@ def build_variants(
     memes = select_memes(text, region, platform, limit=max(2, limit - 1), allow_medium_risk=allow_medium_risk)
     base_claim = _title_case_hook(highlight.hook or highlight.title, title_limit)
     subject = _trim(highlight.title, 42)
+    caption_body = _caption_body(highlight, text, limits["caption"])
 
     variants: list[dict] = []
 
@@ -93,7 +108,7 @@ def build_variants(
             "platform": platform,
             "title": _title_case_hook(base_claim, title_limit),
             "hook": organic_hook,
-            "description": _trim(highlight.reason or text, limits["caption"]),
+            "description": caption_body,
             "hashtags": _hashtags(region, highlight.keywords, platform),
             "cta": region.cta,
             "meme": None,
@@ -102,13 +117,15 @@ def build_variants(
     )
 
     for index, meme in enumerate(memes):
-        if "{twist}" in (meme.get("pattern") or "") and not highlight.reason:
+        # A {twist} meme fills its twist from what was said; skip it when there
+        # is no spoken copy rather than naming the operator's reason in a title.
+        if "{twist}" in (meme.get("pattern") or "") and not caption_body:
             continue
         shaped = apply_pattern(
             meme,
             subject=subject,
             claim=base_claim,
-            twist=_trim(highlight.reason, 60),
+            twist=_trim(caption_body, 60),
         )
         emoji = _emoji(region, index)
         hook_text = _trim(f"{shaped} {emoji}".strip(), 95)
@@ -120,7 +137,7 @@ def build_variants(
                 "platform": platform,
                 "title": _title_case_hook(shaped, title_limit),
                 "hook": hook_text,
-                "description": _trim(f"{highlight.reason} {region.cta}.", limits["caption"]),
+                "description": _trim(f"{caption_body} {region.cta}.", limits["caption"]),
                 "hashtags": _hashtags(region, highlight.keywords, platform),
                 "cta": region.cta,
                 "meme": meme,
@@ -137,7 +154,7 @@ def build_variants(
             "platform": platform,
             "title": _title_case_hook(base_claim, title_limit),
             "hook": _trim(f"{base_claim} — {region.cta}", 95),
-            "description": _trim(f"{highlight.reason} {region.cta}.", limits["caption"]),
+            "description": _trim(f"{caption_body} {region.cta}.", limits["caption"]),
             "hashtags": _hashtags(region, highlight.keywords, platform),
             "cta": region.cta,
             "meme": None,
