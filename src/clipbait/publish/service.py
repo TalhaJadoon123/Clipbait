@@ -441,6 +441,7 @@ def publish_queue(
     limit: int = 10,
     min_score: float = 0.0,
     project_match: str | None = None,
+    monitor_id: str | None = None,
 ) -> list[PublishResult]:
     """Plan or send the top of the money queue, best-expected first."""
     options = options or PublishOptions()
@@ -451,6 +452,7 @@ def publish_queue(
         include_posted=options.republish,
         rate_per_1k=rules.rate_per_1k,
         project_match=project_match,
+        monitor_id=monitor_id,
     )
     return [
         publish_clip(item.clip_id, options=options, provider=provider)

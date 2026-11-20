@@ -8,6 +8,7 @@ The verbs, shortest first::
     clipbait streams --query       # find the biggest live rooms right now
     clipbait queue --export        # rank ready clips, write upload bundles
     clipbait publish --live        # post them to your accounts at the best window
+    clipbait autopilot             # discover -> watch -> clip -> post, on a loop
     clipbait check <clip>          # pre-post check: will it be accepted?
     clipbait doctor                # what is installed, what is missing
 
@@ -623,6 +624,73 @@ def cmd_publish(args: argparse.Namespace) -> int:
     return 0 if all(result.ok for result in results) else 1
 
 
+# ------------------------------------------------------------------ autopilot
+
+
+def cmd_autopilot(args: argparse.Namespace) -> int:
+    from .autopilot import AutopilotOptions, run
+
+    settings = get_settings()
+    settings.ensure_dirs()
+    db.init_db()
+
+    if args.minutes < 1:
+        print("--minutes must be at least 1", file=sys.stderr)
+        return 2
+
+    options = AutopilotOptions(
+        query=args.query,
+        source=args.source,
+        rounds=args.rounds,
+        minutes=args.minutes,
+        cooldown_seconds=args.cooldown,
+        max_clips=args.max_clips,
+        threshold=args.threshold,
+        content_threshold=args.content_threshold,
+        preset=args.preset,
+        region=args.region,
+        platform=args.platform,
+        language=args.language,
+        hashtags=parse_hashtags(getattr(args, "hashtags", None)),
+        buffer_seconds=args.buffer_seconds,
+        min_score=args.min_score,
+        campaign=args.campaign,
+        live=args.live,
+        title=args.title or "",
+    )
+    if args.live and not settings.upload_post_api_key:
+        print(
+            "warning: --live is set but UPLOAD_POST_API_KEY is missing; "
+            "every send will fail until it is set."
+        )
+
+    scope = "until interrupted" if options.rounds <= 0 else f"{options.rounds} round(s)"
+    target = options.source or f"query {options.query!r}"
+    print(
+        f"Autopilot: {target}, {scope}, {options.minutes}m/round, "
+        f"publish={'LIVE' if options.live else 'off (package only)'}"
+    )
+    try:
+        rounds = run(options)
+    except KeyboardInterrupt:
+        print("\nstopped")
+        rounds = []
+
+    if args.json:
+        print(json.dumps([item.as_dict() for item in rounds], indent=2))
+    else:
+        clips = sum(item.clips for item in rounds)
+        exported = sum(item.exported for item in rounds)
+        published = sum(item.published for item in rounds)
+        print(
+            f"\n{len(rounds)} round(s) · {clips} clip(s) · {exported} packaged"
+            + (f" · {published} sent" if options.live else "")
+        )
+        if not options.live and exported:
+            print("  packaged only. Re-run with --live to post at each clip's window.")
+    return 0 if rounds else 1
+
+
 # ---------------------------------------------------------------------- parser
 
 
@@ -787,6 +855,51 @@ def build_parser() -> argparse.ArgumentParser:
     )
     publish_cmd.add_argument("--json", action="store_true")
     publish_cmd.set_defaults(func=cmd_publish)
+
+    auto = sub.add_parser(
+        "autopilot", help="discover, watch, clip and post on a loop"
+    )
+    auto.add_argument("--query", default="gta 6", help="what to search for when discovering")
+    auto.add_argument("--source", help="a fixed URL; skips discovery and watches this only")
+    auto.add_argument(
+        "--rounds", type=int, default=0, help="how many rounds; 0 = until interrupted"
+    )
+    auto.add_argument("--minutes", type=int, default=30, help="minutes to watch per round")
+    auto.add_argument("--cooldown", type=int, default=60, help="seconds between rounds")
+    auto.add_argument(
+        "--max-clips", type=int, default=4, help="stop a round after this many clips; 0 = no cap"
+    )
+    auto.add_argument("--threshold", type=float, default=3.0, help="chat spike z-score threshold")
+    auto.add_argument(
+        "--content-threshold",
+        type=float,
+        default=2.5,
+        help="on-stream signal threshold (0.5-12, lower = more clips)",
+    )
+    auto.add_argument("--preset", default="default")
+    auto.add_argument("--region", default="US")
+    auto.add_argument(
+        "--platform", default="tiktok", choices=["tiktok", "reels", "shorts", "linkedin", "x"]
+    )
+    auto.add_argument("--language", default="auto", help="speech language, e.g. en; auto guesses")
+    auto.add_argument(
+        "--hashtags", help="tags for the stream, e.g. '#kaicenat #gta6'; they drive the copy"
+    )
+    auto.add_argument(
+        "--buffer-seconds", type=int, default=420, help="footage kept on disk per round"
+    )
+    auto.add_argument("--min-score", type=float, default=35.0, help="export/post above this score")
+    auto.add_argument(
+        "--campaign", help="campaign rules file: gates the copy and sets the rate"
+    )
+    auto.add_argument(
+        "--live",
+        action="store_true",
+        help="post the clips for real; without it they are only packaged",
+    )
+    auto.add_argument("--title", help="title to give each round's monitor")
+    auto.add_argument("--json", action="store_true")
+    auto.set_defaults(func=cmd_autopilot)
 
     check_cmd = sub.add_parser("check", help="pre-post check of a finished clip")
     check_cmd.add_argument("clip", help="clip id (clip_...) or path to an mp4")

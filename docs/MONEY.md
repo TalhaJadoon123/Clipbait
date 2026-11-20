@@ -324,6 +324,28 @@ It finds the biggest live room for the query, monitors it with on-stream
 detection, then writes an export bundle for every clip above `MIN_SCORE`. Pass
 `PUBLISH=1` to also hand the bundles to `clipbait publish --live`.
 
+`earn.sh` is a single pass. When you want the pass to repeat by itself, that is
+`clipbait autopilot`:
+
+```bash
+clipbait autopilot --query "gta 6" --rounds 4 --minutes 30 --live \
+  --campaign data/campaigns/clipmoney.md
+clipbait autopilot --source "https://youtube.com/watch?v=..." --rounds 0   # until Ctrl-C
+```
+
+Each round it discovers the biggest live room (or watches `--source`),
+monitors it for `--minutes` **or** until `--max-clips` clips render, whichever
+comes first, stops the monitor, packages that round's clips, and — only with
+`--live` — posts them at their windows. Then it cools down and picks the next
+room it has not already watched. Without `--live` it is a full dry loop:
+discover, watch, clip and package, but send nothing.
+
+The round decisions (`round_finished`, `more_rounds`, `pick_stream`) are pure and
+tested against a fake clock. Every side effect the loop performs — discover,
+start, status, stop, clips, export, publish, sleep — sits behind one replaceable
+`Runtime`, so the loop is exercised end to end in tests with a fake clock and no
+network, ffmpeg or real sleep.
+
 ## Publishing
 
 The queue decides *what* to post. `publish` decides *when* and *where*, and

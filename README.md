@@ -39,6 +39,8 @@ And one engineering constraint: **the zero-key path is a first-class product**. 
 | **Live chat spike detection → auto-clip** | ✅ | ❌ | paid tier |
 | **On-stream detection (speech, loudness, action)** | ✅ | ❌ | ❌ |
 | **Revenue-ranked posting queue + export bundles** | ✅ | ❌ | analytics only |
+| **Auto-post to your accounts at the best window** | ✅ | ❌ | paid tier |
+| **Unattended autopilot loop (discover→watch→clip→post)** | ✅ | ❌ | ❌ |
 | **Region playbooks (26 markets)** | ✅ | ❌ | ❌ |
 | **Meme-format matching (26 formats)** | ✅ | ❌ | ❌ |
 | **Meme video b-roll inserts (gap/signal-triggered)** | ✅ | ❌ | ❌ |
@@ -167,6 +169,11 @@ clipbait check clip_abc123 --campaign data/campaigns/clipmoney.md
 # One unattended pass: find a live room, watch it, package what is ready
 ./scripts/earn.sh
 QUERY="kai cenat" MINUTES=45 CAMPAIGN=data/campaigns/clipmoney.md ./scripts/earn.sh
+
+# The whole loop, unattended: discover -> watch -> clip -> post, round after round
+clipbait autopilot --query "gta 6" --rounds 4 --minutes 30 --live \
+  --campaign data/campaigns/clipmoney.md
+clipbait autopilot --source "https://youtube.com/watch?v=..." --rounds 0   # fixed room, until Ctrl-C
 
 # Inspect the environment
 clipbait doctor
@@ -379,6 +386,30 @@ automation: nothing has to stay running waiting for the hour to arrive.
 Every send is idempotent (`Idempotency-Key: clipbait-<clip_id>`), and a clip is
 only marked posted after the provider accepts it. A re-run returns the existing
 job instead of posting twice.
+
+### Autopilot
+
+`clipbait autopilot` runs the whole thing unattended, round after round:
+
+```bash
+clipbait autopilot --query "gta 6" --rounds 4 --minutes 30 --live
+clipbait autopilot --source "https://youtube.com/watch?v=..." --rounds 0  # until Ctrl-C
+```
+
+Each round it finds the biggest live room for `--query` (or watches the fixed
+`--source`), monitors it for `--minutes` **or** until `--max-clips` clips render
+(whichever comes first), stops the monitor, packages what is ready, and — only
+with `--live` — hands that round's clips to `publish` at their windows. Then it
+cools down `--cooldown` seconds and picks the next room it has not already
+watched.
+
+Publishing is off unless `--live` is passed; without it the loop still discovers,
+watches and clips, so you can watch it work before it ever posts.
+
+The round decisions are pure and tested against a fake clock, and every side
+effect (discover, start, stop, export, publish, sleep) sits behind one
+replaceable `Runtime`, so the loop is exercised end to end in tests with no
+network and no ffmpeg.
 
 
 ---

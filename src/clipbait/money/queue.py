@@ -248,6 +248,7 @@ def build_queue(
     include_posted: bool = False,
     rate_per_1k: float | None = None,
     project_match: str | None = None,
+    monitor_id: str | None = None,
 ) -> Queue:
     """Rank every ready clip by expected revenue.
 
@@ -260,6 +261,7 @@ def build_queue(
     items: list[QueueItem] = []
     seen: set[tuple[str, int, int]] = set()
     needle = (project_match or "").strip().lower()
+    wanted_monitor = (monitor_id or "").strip()
 
     def belongs_to_campaign(clip: dict, project: dict) -> bool:
         """Live projects are titled by the moment, so the monitor is the source."""
@@ -280,6 +282,9 @@ def build_queue(
         if project is None:
             project = db.get_project(project_id) or {"title": "", "options": {}}
             projects[project_id] = project
+
+        if wanted_monitor and str((clip.get("meta") or {}).get("monitor_id") or "") != wanted_monitor:
+            continue
 
         item = _to_item(clip, project, rate_per_1k=rate_per_1k)
         if item is None:
