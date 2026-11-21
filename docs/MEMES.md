@@ -1,9 +1,9 @@
 # Meme video inserts
 
 A short b-roll cutaway **inside** a clip: the picture cuts to a generated meme
-for a moment, then cuts back. Off by default — it changes the footage, not just
-the copy. Enable it per project with **Meme video inserts** in the UI or
-`meme_inserts: true` in the API request.
+for a moment, then cuts back. On by default — a raw gameplay slice reads flat in
+Shorts. Turn it off per project with **Meme video inserts** in the UI,
+`meme_inserts: false` in the API request, or `--no-meme-inserts` on the CLI.
 
 ## The two rules
 

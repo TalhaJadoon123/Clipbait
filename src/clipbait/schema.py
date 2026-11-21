@@ -104,9 +104,10 @@ class ProjectOptions(BaseModel):
     # transcription and each kept clip is fetched as a short section. ``download``
     # forces the old "fetch the whole file first" behaviour.
     source_mode: Literal["auto", "download"] = "auto"
-    # Meme *video* inserts (b-roll cutaways between spoken sentences). Off by
-    # default: it changes the footage, not just the copy.
-    meme_inserts: bool = False
+    # Meme *video* inserts (b-roll cutaways between spoken sentences). On by
+    # default: a raw gameplay slice reads flat in Shorts. Pass ``False`` (CLI
+    # ``--no-meme-inserts``) to keep the footage pure.
+    meme_inserts: bool = True
     meme_insert_seconds: float = Field(default=2.0, ge=0.8, le=5.0)
     meme_max_inserts: int = Field(default=2, ge=1, le=6)
 

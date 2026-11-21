@@ -42,6 +42,16 @@ def _setup_logging(verbose: bool) -> None:
 # --------------------------------------------------------------------- doctor
 
 
+def _publishing_note(settings) -> str:
+    """One honest line about the active publish backend and whether it can send."""
+    provider = (settings.publish_provider or "upload_post").strip().lower()
+    if provider == "postiz":
+        state = "key set" if settings.postiz_api_key else "no key: dry run only"
+        return f"postiz @ {settings.postiz_api_url} ({state})"
+    state = "key set" if settings.upload_post_api_key else "no key: dry run only"
+    return f"upload-post ({state})"
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     settings = get_settings()
     caps = detect_capabilities(settings)
@@ -60,8 +70,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"  [{mark}] {name:<16} {detail}")
     print(f"\n  transcriber : {caps.transcriber}")
     print(f"  llm         : {caps.llm_provider or 'none (heuristic ranking still works)'}")
-    publishing = "upload-post (key set)" if settings.upload_post_api_key else "upload-post (no key: dry run only)"
-    print(f"  publishing  : {publishing}")
+    print(f"  publishing  : {_publishing_note(settings)}")
     print(f"  data dir    : {settings.data_dir}")
     print(f"  database    : {settings.db_path}")
 
@@ -251,6 +260,7 @@ def cmd_grab(args: argparse.Namespace) -> int:
         reframe_mode=args.reframe,
         captions=not args.no_captions,
         hook_titles=not args.no_hooks,
+        meme_inserts=not getattr(args, "no_meme_inserts", False),
         language=args.language,
         hashtags=parse_hashtags(getattr(args, "hashtags", None)),
         region=args.region,
@@ -700,11 +710,14 @@ def cmd_autopilot(args: argparse.Namespace) -> int:
         post_now=args.now,
         title=args.title or "",
     )
-    if args.live and not settings.upload_post_api_key:
-        print(
-            "warning: --live is set but UPLOAD_POST_API_KEY is missing; "
-            "every send will fail until it is set."
-        )
+    if args.live:
+        from .publish import publish_provider
+
+        if not publish_provider().ready:
+            print(
+                "warning: --live is set but the publish provider is not configured; "
+                "every send will fail until a key is set."
+            )
 
     scope = "until interrupted" if options.rounds <= 0 else f"{options.rounds} round(s)"
     target = options.source or f"query {options.query!r}"
@@ -795,6 +808,11 @@ def build_parser() -> argparse.ArgumentParser:
     grab.add_argument("--export", action="store_true", help="write an upload-ready bundle")
     grab.add_argument("--no-captions", action="store_true")
     grab.add_argument("--no-hooks", action="store_true")
+    grab.add_argument(
+        "--no-meme-inserts",
+        action="store_true",
+        help="keep the footage pure (no meme b-roll cutaways); inserts are on by default",
+    )
     grab.add_argument("--json", action="store_true", help="print the clip as JSON")
     grab.set_defaults(func=cmd_grab)
 

@@ -79,6 +79,28 @@ def test_doctor_warns_about_missing_ffmpeg(monkeypatch, capsys):
     assert "synthetic" in out
 
 
+def test_publishing_note_names_the_active_provider():
+    from dataclasses import replace
+
+    from clipbait.config import get_settings
+
+    base = get_settings()
+    postiz = replace(
+        base,
+        publish_provider="postiz",
+        postiz_api_key="k",
+        postiz_api_url="http://box:4007/api/public/v1",
+    )
+    assert cli._publishing_note(postiz) == "postiz @ http://box:4007/api/public/v1 (key set)"
+    # A missing Postiz key reads as dry-run, not as a broken Upload-Post setup.
+    assert cli._publishing_note(replace(postiz, postiz_api_key=None)).endswith(
+        "(no key: dry run only)"
+    )
+    # The Upload-Post provider keeps its own wording.
+    upload = replace(base, publish_provider="upload_post", upload_post_api_key="k")
+    assert cli._publishing_note(upload) == "upload-post (key set)"
+
+
 # ---------------------------------------------------------------------- serve
 
 
@@ -312,6 +334,66 @@ def test_live_monitor_wants_memes_in_shorts():
     options = MonitorOptions()
     assert options.meme_inserts is True
     assert options.meme_max_inserts >= 1
+
+
+def test_project_options_default_to_memes():
+    # process, live and grab all read this default; a flat, meme-less Short
+    # should be the opt-in, never the silent default.
+    from clipbait.schema import ProjectOptions
+
+    assert ProjectOptions().meme_inserts is True
+
+
+def grab_args(source: str, **overrides) -> argparse.Namespace:
+    data = {
+        "source": source,
+        "at": "0:30",
+        "seconds": 20.0,
+        "title": None,
+        "reason": None,
+        "preset": "default",
+        "reframe": "auto",
+        "language": "auto",
+        "hashtags": None,
+        "region": "US",
+        "platform": "tiktok",
+        "campaign": None,
+        "export": False,
+        "no_captions": False,
+        "no_hooks": False,
+        "no_meme_inserts": False,
+        "json": False,
+    }
+    data.update(overrides)
+    return argparse.Namespace(**data)
+
+
+def _stub_grab(seen: list[str]):
+    def fake_grab(project_id, start, end, title=None, reason=None):
+        seen.append(project_id)
+        return {"id": "clip_grab", "status": "ready", "title": "t", "quote": "", "render_path": None}
+
+    return fake_grab
+
+
+def test_grab_wants_memes_in_shorts(monkeypatch, tmp_path):
+    # `grab` is the "clip this exact moment" verb; it must want the same b-roll
+    # inserts as process/live instead of silently rendering a flat Short.
+    seen: list[str] = []
+    monkeypatch.setattr("clipbait.pipeline.grab_moment", _stub_grab(seen))
+    source = make_video(tmp_path / "grab.mp4", seconds=1, size="160x90")
+
+    assert cli.cmd_grab(grab_args(str(source))) == 0
+    assert db.get_project(seen[0])["options"]["meme_inserts"] is True
+
+
+def test_grab_can_turn_memes_off(monkeypatch, tmp_path):
+    seen: list[str] = []
+    monkeypatch.setattr("clipbait.pipeline.grab_moment", _stub_grab(seen))
+    source = make_video(tmp_path / "grab.mp4", seconds=1, size="160x90")
+
+    assert cli.cmd_grab(grab_args(str(source), no_meme_inserts=True)) == 0
+    assert db.get_project(seen[0])["options"]["meme_inserts"] is False
 
 
 def test_out_dir_is_reported(monkeypatch, render_stub, tmp_path, capsys):
