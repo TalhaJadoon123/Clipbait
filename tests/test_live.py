@@ -1412,7 +1412,9 @@ def test_autopublish_posts_a_ready_clip_immediately(monkeypatch):
     from clipbait import publish as publish_mod
     from clipbait.publish.provider import PublishResult
 
-    monitor = make_monitor(auto_publish=True, post_now=True, publish_min_score=20)
+    monitor = make_monitor(
+        auto_publish=True, post_now=True, publish_min_score=20, platform="shorts"
+    )
     runner = LiveRunner(monitor)
     clip = _ready_clip(33)
 
@@ -1422,6 +1424,7 @@ def test_autopublish_posts_a_ready_clip_immediately(monkeypatch):
         calls["clip_id"] = clip_id
         calls["live"] = options.live
         calls["post_now"] = options.post_now
+        calls["platforms"] = options.platforms
         return PublishResult(ok=True, url="https://youtu.be/x")
 
     monkeypatch.setattr(publish_mod, "publish_clip", fake_publish)
@@ -1430,7 +1433,14 @@ def test_autopublish_posts_a_ready_clip_immediately(monkeypatch):
 
     runner._autopublish(clip["id"], "mom_1")
 
-    assert calls == {"clip_id": clip["id"], "live": True, "post_now": True}
+    # Posts immediately, to the run's chosen destination (the connected channel),
+    # not the money layer's recommended platform.
+    assert calls == {
+        "clip_id": clip["id"],
+        "live": True,
+        "post_now": True,
+        "platforms": ("shorts",),
+    }
 
 
 def test_autopublish_respects_the_score_floor(monkeypatch):

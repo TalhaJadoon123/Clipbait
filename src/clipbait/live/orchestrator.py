@@ -623,6 +623,10 @@ class LiveRunner:
                         live=True,
                         post_now=bool(getattr(options, "post_now", True)),
                         campaign=getattr(options, "campaign", None),
+                        # Post to the destination this run was set up for (the
+                        # connected channel), not the money layer's recommended
+                        # platform, which the account may not even have.
+                        platforms=(options.platform,),
                     ),
                     provider=publish_provider(),
                 )
