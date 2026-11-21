@@ -330,6 +330,7 @@ def cmd_live(args: argparse.Namespace) -> int:
         # a cutaway.
         meme_inserts=not getattr(args, "no_meme_inserts", False),
         chat_only_clips=getattr(args, "chat_only_clips", False),
+        **_style_kwargs(args),
     )
     monitor = db.create_monitor(
         {
@@ -709,6 +710,7 @@ def cmd_autopilot(args: argparse.Namespace) -> int:
         live=args.live,
         post_now=args.now,
         title=args.title or "",
+        **_style_kwargs(args),
     )
     if args.live:
         from .publish import publish_provider
@@ -747,6 +749,44 @@ def cmd_autopilot(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------- parser
+
+
+def _add_style_args(parser: argparse.ArgumentParser) -> None:
+    """The channel-look flags shared by ``live`` and ``autopilot``.
+
+    One helper keeps the two surfaces from drifting: an operator sets the look
+    once and it means the same thing whether they watch a fixed room or a roster.
+    """
+    parser.add_argument(
+        "--effect",
+        default="none",
+        choices=["none", "stopmotion", "punch"],
+        help="stylised picture: stopmotion (frame-hold judder) or punch (subtle crop-in)",
+    )
+    parser.add_argument(
+        "--music",
+        help="music bed: a track name in CLIPBAIT_MUSIC_DIR, or a path; omit to pick one",
+    )
+    parser.add_argument(
+        "--music-volume",
+        type=float,
+        default=0.16,
+        help="music bed level under the speech (0-1, default 0.16)",
+    )
+    parser.add_argument(
+        "--no-meme-sfx",
+        action="store_true",
+        help="do not play a sound effect over each meme insert",
+    )
+
+
+def _style_kwargs(args: argparse.Namespace) -> dict:
+    return {
+        "effect": getattr(args, "effect", "none"),
+        "music": getattr(args, "music", None),
+        "music_volume": getattr(args, "music_volume", 0.16),
+        "meme_sfx": not getattr(args, "no_meme_sfx", False),
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -868,6 +908,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=420,
         help="footage kept on disk; must outlast content analysis",
     )
+    _add_style_args(live_cmd)
     live_cmd.set_defaults(func=cmd_live)
 
     queue_cmd = sub.add_parser("queue", help="rank ready clips by expected revenue")
@@ -995,6 +1036,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     auto.add_argument("--title", help="title to give each round's monitor")
     auto.add_argument("--json", action="store_true")
+    _add_style_args(auto)
     auto.set_defaults(func=cmd_autopilot)
 
     check_cmd = sub.add_parser("check", help="pre-post check of a finished clip")

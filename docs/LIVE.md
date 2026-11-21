@@ -171,11 +171,23 @@ When a moment is captured:
    the offset into the first one.
 2. The capture thread waits until the last needed segment is complete (bounded
    at 90 s so a dead stream cannot hang forever).
-3. An ffconcat file is written and ffmpeg cuts with `-ss <offset> -t <length>`,
-   re-encoding to H.264/AAC with `+faststart`.
+3. An ffconcat file is written and ffmpeg cuts the window, applying `-ss <offset>
+   -t <length>` **after** `-i` (an output seek).
 
 Stream copy is used for capture (cheap, accurate timestamps); the slice is
 re-encoded once so every clip starts on a keyframe and has clean audio.
+
+### Seek after `-i`, not before it
+
+The seek must be an output option. An input seek (`-ss` before `-i`) on a concat
+of TS segments lands the **video** on the nearest keyframe — up to a second
+*after* the **audio** seek point — so the slice opens with audio that has no
+matching picture. The render rebases each stream independently, so that offset is
+frozen in and every burned caption sits that far off the lips. As an output seek,
+ffmpeg decodes from the head of the already-trimmed window and applies one seek
+point to both streams, keeping video and audio starting together.
+`tests/test_live.py::test_hls_slice_seeks_after_input_so_av_stay_aligned` locks
+this in.
 
 `FileRecorder` implements the same interface over a local file on a synthetic
 clock. That is what `demo://live` and the tests use, so the live pipeline is
@@ -263,6 +275,38 @@ product without going live.
 
 ---
 
+## Channel look: effects, music, meme SFX
+
+Three optional touches make a channel's Shorts feel produced rather than plain.
+All three are safe-by-default (`none` / off), so a clip is unchanged until the
+operator asks for them, and they are exposed identically on `live` and
+`autopilot` via the shared flags.
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--effect none\|stopmotion\|punch` | `none` | `stopmotion` drops the picture to ~12 updates/s and resamples back: frame-hold judder that reads as stop-motion. `punch` crops 8% and scales back for a constant subtle punch-in. Captions are burned **after** the effect, so the text never judders or zooms. |
+| `--music [TRACK]` | off | Mixes a music bed quietly under the speech. With no name, one track from `CLIPBAIT_MUSIC_DIR` is chosen per clip id, so clips vary without an operator picking each one; a name resolves against the working directory then that folder. |
+| `--music-volume V` | `0.16` | Music level (`0`–`1`). |
+| `--no-meme-sfx` | SFX on | Play a short sound effect (from `CLIPBAIT_MEME_SFX_DIR`) over each meme cutaway, so a cutaway lands with a punch instead of silently. |
+
+```bash
+clipbait live "https://www.twitch.tv/somechannel" \
+  --effect stopmotion --music hype.mp3 --music-volume 0.2
+```
+
+Every source is summed with `amix ... normalize=0`, so the speech stays at full
+level rather than being halved by the mix, and a mild final `volume` guards
+against the summed peaks clipping. A silent source still gets a bed: the music
+becomes the single `[a]` stream, so `-map [a]` and the encoder never change.
+
+Meme inserts are library-backed and can be **images as well as GIFs/video**:
+`prepare_insert` loops a still jpg/png/webp with `-loop 1`, an animated source
+with `-stream_loop -1`, and fits either whole on a blurred fill, so a static meme
+is as usable as an animated one. See the meme providers and env keys in
+[`README.md`](../README.md) (`CLIPBAIT_MEME_*`).
+
+---
+
 ## Running a monitor
 
 ### UI
@@ -334,9 +378,16 @@ keeps the autopilot on the top `--concurrency` of them, rotating as streams end:
 ```bash
 .venv/bin/python scripts/supervise_roster.py \
   --queries "gta 6,just chatting,fortnite,valorant,music" \
+  --priority "ishowspeed" \
   --min-viewers 3000 --concurrency 1 \
   --platform shorts --live --now --threshold 2.0 --content-threshold 1.3 --min-score 20
 ```
+
+`--priority` names streamers to favour: a priority channel sorts ahead of every
+non-priority room **even when it has fewer viewers**, so "take as many clips of
+this person as possible" holds while they are live, and the roster still fills
+with the biggest other rooms when they are not. Priority names are also searched,
+so a favoured streamer is discovered even when no topic query matches their room.
 
 Two policies keep a roster run honest and safe, and both are off/blank by default:
 

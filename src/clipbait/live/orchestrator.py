@@ -477,6 +477,10 @@ class LiveRunner:
                         "meme_inserts": self.options.meme_inserts,
                         "meme_insert_seconds": self.options.meme_insert_seconds,
                         "meme_max_inserts": self.options.meme_max_inserts,
+                        "effect": self.options.effect,
+                        "music": self.options.music,
+                        "music_volume": self.options.music_volume,
+                        "meme_sfx": self.options.meme_sfx,
                     },
                 }
             )

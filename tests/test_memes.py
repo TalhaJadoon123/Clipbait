@@ -198,6 +198,63 @@ def test_graph_chains_multiple_inserts() -> None:
     assert "enable='between(t,12.000,14.000)'" in graph
 
 
+def test_graph_stopmotion_effect_runs_before_the_caption_pass() -> None:
+    graph, _ = _graph(
+        _plan(), Path("/tmp/x.ass"), fps=30.0, has_audio=True, effect="stopmotion"
+    )
+    # Dropped to ~12 updates/s then resampled back to the clip rate.
+    assert "fps=12,fps=30.0" in graph
+    # Captions are burned after the effect, so the text never judders with it.
+    assert graph.index("fps=12") < graph.index("ass=f=")
+
+
+def test_graph_punch_effect_crops_in() -> None:
+    graph, _ = _graph(_plan(), None, fps=30.0, has_audio=True, effect="punch")
+    assert "scale=1166:2074" in graph  # 1080x1920 * 1.08, rounded to even
+    assert "crop=1080:1920" in graph
+
+
+def test_graph_mixes_a_music_bed_under_the_speech() -> None:
+    graph, has_audio = _graph(
+        _plan(),
+        None,
+        fps=30.0,
+        has_audio=True,
+        duration=10.0,
+        music_index=1,
+        music_volume=0.2,
+    )
+    assert "[1:a]atrim=0:10.000" in graph
+    assert "volume=0.200" in graph
+    assert "amix=inputs=2" in graph
+    assert "normalize=0" in graph  # speech stays at full level
+    assert has_audio is True
+
+
+def test_graph_plays_an_insert_sound_effect_at_its_window() -> None:
+    graph, _ = _graph(
+        _plan(),
+        None,
+        fps=30.0,
+        has_audio=True,
+        duration=10.0,
+        sfx=[(1, 4.0, 6.0, 0.5)],
+    )
+    assert "adelay=4000|4000" in graph  # starts when the insert opens
+    assert "volume=0.500" in graph
+    assert "amix=inputs=2" in graph
+
+
+def test_graph_with_only_music_needs_no_source_audio() -> None:
+    graph, has_audio = _graph(
+        _plan(), None, fps=30.0, has_audio=False, duration=5.0, music_index=1
+    )
+    # A silent source still gets a sound: the music bed is the one audio input
+    # and is named ``[a]`` directly, so ``-map [a]`` keeps working.
+    assert has_audio is True
+    assert graph.endswith("[1:a]atrim=0:5.000,asetpts=PTS-STARTPTS,aresample=48000,volume=0.160[a]")
+
+
 # ------------------------------------------------------------------- providers
 
 

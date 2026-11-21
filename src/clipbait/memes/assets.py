@@ -50,16 +50,20 @@ def prepare_insert(
         f"[0:v]{fill};[0:v]{fit};"
         f"[bg][fg]overlay=(W-w)/2:(H-h)/2,fps={fps},setsar=1[v]"
     )
+    # A still image (jpg/png/webp) is one frame, so it needs ``-loop 1`` to fill
+    # the window; an animated source loops with ``-stream_loop -1``. Both are
+    # then trimmed to the window, so a static meme is as usable as a GIF.
+    if _is_still(source):
+        pre = ["-loop", "1", "-framerate", str(fps), "-i", str(source)]
+    else:
+        pre = ["-stream_loop", "-1", "-i", str(source)]
     cmd = [
         get_settings().ffmpeg,
         "-hide_banner",
         "-loglevel",
         "error",
         "-y",
-        "-stream_loop",
-        "-1",
-        "-i",
-        str(source),
+        *pre,
         "-t",
         f"{duration:.3f}",
         "-an",
@@ -81,6 +85,19 @@ def prepare_insert(
     ]
     media.run(cmd)
     return out_path
+
+
+def _is_still(source: Path) -> bool:
+    """True for a single-frame image (as opposed to an animated GIF or video).
+
+    A real clip has a duration; a still image reports ~0 (or nothing), which is
+    what decides between ``-loop 1`` and ``-stream_loop -1``.
+    """
+    try:
+        info = media.probe(source)
+    except media.MediaError:
+        return False
+    return info.duration <= 0.1
 
 
 __all__ = ["prepare_insert"]

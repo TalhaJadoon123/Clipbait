@@ -58,6 +58,12 @@ class AutopilotOptions:
     live: bool = False  # publish for real (else package only)
     post_now: bool = False  # send immediately; else schedule at the best window
     title: str = ""
+    # The channel's look: a stylised picture effect, a music bed, and a sound
+    # effect on each meme cutaway. ``none``/``None`` keep a clip plain.
+    effect: str = "none"
+    music: str | None = None
+    music_volume: float = 0.16
+    meme_sfx: bool = True
 
 
 @dataclass(frozen=True)
@@ -221,6 +227,10 @@ def start_monitor(source: str, title: str, options: AutopilotOptions) -> str:
         post_now=options.post_now,
         publish_min_score=options.min_score,
         campaign=options.campaign,
+        effect=options.effect,
+        music=options.music,
+        music_volume=options.music_volume,
+        meme_sfx=options.meme_sfx,
     )
     monitor = db.create_monitor(
         {

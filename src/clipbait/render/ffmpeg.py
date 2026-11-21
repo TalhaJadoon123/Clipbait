@@ -43,6 +43,87 @@ def _esc(path: Path) -> str:
     return media.escape_filter_path(path)
 
 
+def _effect_label(
+    effect: str | None, final: str, *, fps: float, out_w: int, out_h: int
+) -> tuple[str, str]:
+    """Appended filter chain for a stylised look, and its output label.
+
+    Effects run *after* the layout and meme inserts but *before* the caption
+    pass, so burned captions never judder or zoom with the picture.
+    """
+    style = (effect or "none").lower()
+    if style in {"", "none"}:
+        return "", final
+    if style == "stopmotion":
+        # Drop to a low update rate, then resample back to the clip rate so each
+        # held frame repeats two or three times: the judder reads as stop-motion
+        # rather than the smooth motion of the source.
+        low = max(6, int(round(fps / 2.5)))
+        return f";[{final}]fps={low},fps={fps},setsar=1[fx]", "fx"
+    if style == "punch":
+        # A constant, subtle punch-in: crop 8% and scale back up. Cheap (no
+        # zoompan) and it makes a flat talking-head slice read as framed.
+        zoom_w = _even(int(round(out_w * 1.08)))
+        zoom_h = _even(int(round(out_h * 1.08)))
+        return f";[{final}]scale={zoom_w}:{zoom_h},crop={out_w}:{out_h},setsar=1[fx]", "fx"
+    return "", final
+
+
+def _audio_label(
+    *,
+    has_audio: bool,
+    duration: float,
+    music_index: int | None,
+    music_volume: float,
+    sfx: list[tuple[int, float, float, float]],
+) -> tuple[str, bool]:
+    """Mix the source audio, an optional music bed and insert sound effects.
+
+    One audio output ``[a]`` regardless of how many sources there are, so the
+    caller's ``-map [a]`` never changes. ``normalize=0`` keeps the speech at
+    full level (amix would otherwise halve it); a mild final ``volume`` guards
+    against the summed peaks clipping.
+    """
+    parts: list[str] = []
+    labels: list[str] = []
+    sources: list[tuple[str, str]] = []
+    if has_audio:
+        sources.append(("[0:a]asetpts=PTS-STARTPTS,aresample=48000", "[a0]"))
+    if music_index is not None:
+        sources.append(
+            (
+                f"[{music_index}:a]atrim=0:{duration:.3f},asetpts=PTS-STARTPTS,"
+                f"aresample=48000,volume={music_volume:.3f}",
+                "[mus]",
+            )
+        )
+    for i, (index, start, end, volume) in enumerate(sfx):
+        delay = int(round(max(0.0, start) * 1000))
+        span = max(0.05, end - start)
+        sources.append(
+            (
+                f"[{index}:a]atrim=0:{span:.3f},asetpts=PTS-STARTPTS,aresample=48000,"
+                f"adelay={delay}|{delay},volume={volume:.3f}",
+                f"[sfx{i}]",
+            )
+        )
+    if not sources:
+        return "", False
+    if len(sources) == 1:
+        # One audio source: name it ``[a]`` directly, so a plain clip's graph is
+        # byte-for-byte what it always was.
+        return ";" + sources[0][0] + "[a]", True
+    for part, label in sources:
+        parts.append(part + label)
+        labels.append(label)
+    parts.append(
+        "".join(labels)
+        + f"amix=inputs={len(labels)}:duration=longest:dropout_transition=0:normalize=0"
+        + "[mixed];[mixed]volume=0.95[a]"
+    )
+    return ";" + ";".join(parts), True
+
+
 def _graph(
     plan: ReframePlan,
     ass_path: Path | None,
@@ -50,6 +131,11 @@ def _graph(
     fps: float,
     has_audio: bool,
     inserts: list[tuple[float, float]] | None = None,
+    effect: str | None = None,
+    duration: float = 0.0,
+    music_index: int | None = None,
+    music_volume: float = 0.16,
+    sfx: list[tuple[int, float, float, float]] | None = None,
 ) -> tuple[str, bool]:
     out_w, out_h = plan.out_w, plan.out_h
     scaled_w = _even(round(plan.source_w * out_h / plan.source_h)) if plan.source_h else out_w
@@ -113,14 +199,25 @@ def _graph(
         )
         final = f"o{index}"
 
+    effect_chain, final = _effect_label(
+        effect, final, fps=fps, out_w=out_w, out_h=out_h
+    )
+    chain += effect_chain
+
     if ass_path:
         chain += f";[{final}]ass=f={_esc(ass_path)},setsar=1[v]"
     else:
         chain += f";[{final}]null[v]"
 
-    if has_audio:
-        chain += ";[0:a]asetpts=PTS-STARTPTS,aresample=48000[a]"
-    return chain, has_audio
+    audio_chain, audio_out = _audio_label(
+        has_audio=has_audio,
+        duration=duration,
+        music_index=music_index,
+        music_volume=music_volume,
+        sfx=sfx or [],
+    )
+    chain += audio_chain
+    return chain, audio_out
 
 
 def render_clip(
@@ -137,6 +234,11 @@ def render_clip(
     chat: list[ChatMessage] | None = None,
     encoder: str | None = None,
     inserts: list[tuple[Path, float, float]] | None = None,
+    effect: str | None = None,
+    music: Path | None = None,
+    music_volume: float = 0.16,
+    sfx: list[tuple[Path, float, float]] | None = None,
+    sfx_volume: float = 0.5,
     on_progress: ProgressFn | None = None,
 ) -> RenderResult:
     settings = get_settings()
@@ -166,9 +268,6 @@ def render_clip(
     info = media.probe(source)
     if plan.mode == "track":
         plan = plan.with_sendcmd(out_path.parent / "crop.cmd")
-    graph, has_audio = _graph(
-        plan, ass_path, fps=plan.fps, has_audio=info.has_audio, inserts=windows
-    )
 
     encoder_args = media.hw_encoder(encoder or settings.hw_encoder)
     cmd = [
@@ -184,6 +283,36 @@ def render_clip(
     ]
     for path in insert_paths:
         cmd += ["-i", str(path)]
+
+    # Music and insert sound effects follow the source and the inserts, so their
+    # input indexes are computed from what is already on the command line.
+    next_index = 1 + len(insert_paths)
+    music_index: int | None = None
+    if music is not None and Path(music).exists():
+        cmd += ["-stream_loop", "-1", "-i", str(music)]
+        music_index = next_index
+        next_index += 1
+    sfx_entries: list[tuple[int, float, float, float]] = []
+    for path, sfx_start, sfx_end in sfx or []:
+        if not Path(path).exists():
+            continue
+        cmd += ["-i", str(path)]
+        sfx_entries.append((next_index, sfx_start, sfx_end, sfx_volume))
+        next_index += 1
+
+    graph, has_audio = _graph(
+        plan,
+        ass_path,
+        fps=plan.fps,
+        has_audio=info.has_audio,
+        inserts=windows,
+        effect=effect,
+        duration=duration,
+        music_index=music_index,
+        music_volume=music_volume,
+        sfx=sfx_entries,
+    )
+
     cmd += [
         "-filter_complex",
         graph,

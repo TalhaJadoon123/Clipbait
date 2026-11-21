@@ -88,6 +88,26 @@ def test_select_rooms_can_post_mature_when_asked():
     assert len(picked) == 1 and picked[0].mature is True
 
 
+def test_select_rooms_priority_streamer_outranks_bigger_rooms():
+    """A favoured streamer is clipped even when someone bigger is live."""
+    streams = [
+        _Stream("SomeOther", "just chatting", "u-other", viewers=90000),
+        _Stream("iShowSpeed", "IRL stream", "u-speed", viewers=8000),
+    ]
+    picked = sup.select_rooms(streams, priority=["ishowspeed"], min_viewers=100, limit=1)
+    assert [d.url for d in picked] == ["u-speed"]
+    assert picked[0].priority is True
+
+
+def test_select_rooms_without_priority_still_ranks_by_viewers():
+    streams = [
+        _Stream("SomeOther", "just chatting", "u-other", viewers=90000),
+        _Stream("iShowSpeed", "IRL stream", "u-speed", viewers=8000),
+    ]
+    picked = sup.select_rooms(streams, min_viewers=100, limit=1)
+    assert [d.url for d in picked] == ["u-other"]
+
+
 def test_select_rooms_honours_a_named_roster():
     streams = [
         _Stream("Kai Cenat", "GTA 6 finale", "u-kai", viewers=60000),

@@ -82,6 +82,13 @@ class Settings:
     meme_search_video: str = "url"  # dot path to a video URL in each result
     meme_search_limit: int = 8
     meme_search_rating: str = ""  # e.g. "pg-13" for Giphy
+    # Music bed and insert sound effects. Both are plain folders of audio files
+    # (mp3/m4a/wav/ogg/...): a track loops quietly under the speech, an SFX lands
+    # on each meme cutaway. Empty means "off", so nothing changes until set.
+    music_dir: str | None = None
+    music_volume: float = 0.16
+    meme_sfx_dir: str | None = None
+    meme_sfx_volume: float = 0.5
     max_clips: int = 8
     target_clip_seconds: int = 55
     render_concurrency: int = 1
@@ -179,6 +186,10 @@ def get_settings() -> Settings:
         meme_search_video=_env("CLIPBAIT_MEME_SEARCH_VIDEO", "url") or "url",
         meme_search_limit=max(1, _env_int("CLIPBAIT_MEME_SEARCH_LIMIT", 8)),
         meme_search_rating=_env("CLIPBAIT_MEME_SEARCH_RATING", "") or "",
+        music_dir=_env("CLIPBAIT_MUSIC_DIR"),
+        music_volume=min(1.0, max(0.0, _env_float("CLIPBAIT_MUSIC_VOLUME", 0.16))),
+        meme_sfx_dir=_env("CLIPBAIT_MEME_SFX_DIR"),
+        meme_sfx_volume=min(1.0, max(0.0, _env_float("CLIPBAIT_MEME_SFX_VOLUME", 0.5))),
         max_clips=_env_int("CLIPBAIT_MAX_CLIPS", 8),
         target_clip_seconds=_env_int("CLIPBAIT_TARGET_CLIP_SECONDS", 55),
         render_concurrency=max(1, _env_int("CLIPBAIT_RENDER_CONCURRENCY", 1)),

@@ -87,12 +87,14 @@ class Decision:
     viewers: int
     mature: bool
     may_post: bool
+    priority: bool = False
 
 
 def select_rooms(
     streams,
     *,
     roster=(),
+    priority=(),
     min_viewers: int = 3000,
     mature_terms=DEFAULT_MATURE_TERMS,
     mature_policy: str = "skip",
@@ -104,8 +106,15 @@ def select_rooms(
 
     Pure so it can be tested without a network: give it stream-like objects with
     ``channel``, ``title``, ``url`` and ``viewers`` and it returns the decisions.
+
+    ``priority`` names channels to favour: a room whose channel matches a
+    priority needle sorts ahead of every non-priority room even when it has
+    fewer viewers, so "as many clips of this streamer as possible" holds while
+    they are live and the roster still fills with the biggest other rooms when
+    they are not.
     """
     roster_needles = [r.lower().strip() for r in roster if r and r.strip()]
+    priority_needles = [p.lower().strip() for p in priority if p and p.strip()]
     terms = [t.lower().strip() for t in mature_terms if t and t.strip()]
     rights_needles = [r.lower().strip() for r in rights if r and r.strip()]
 
@@ -130,6 +139,7 @@ def select_rooms(
             # Watch it only if it can be used; a room we may never post is CPU
             # spent for nothing.
             continue
+        is_priority = any(p in lowered_channel for p in priority_needles)
         chosen.append(
             Decision(
                 url=url,
@@ -138,10 +148,11 @@ def select_rooms(
                 viewers=viewers,
                 mature=mature,
                 may_post=may_post,
+                priority=is_priority,
             )
         )
 
-    chosen.sort(key=lambda d: (d.viewers, d.channel), reverse=True)
+    chosen.sort(key=lambda d: (d.priority, d.viewers, d.channel), reverse=True)
     return chosen[: max(1, limit)]
 
 
@@ -230,6 +241,11 @@ def stop_child(child: subprocess.Popen) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--roster", default="", help="comma-separated streamer names to pin to")
+    parser.add_argument(
+        "--priority",
+        default="",
+        help="comma-separated streamer names to favour over bigger rooms while live",
+    )
     parser.add_argument("--queries", default="", help="comma-separated live search topics")
     parser.add_argument("--concurrency", type=int, default=2, help="how many rooms to clip at once")
     parser.add_argument("--min-viewers", type=int, default=3000, help="only clip rooms at least this big")
@@ -269,16 +285,20 @@ def main(argv: list[str] | None = None) -> int:
     args.passthrough = [a for a in args.passthrough if a != "--"]
 
     roster = [r.strip() for r in args.roster.split(",") if r.strip()]
+    priority = [p.strip() for p in args.priority.split(",") if p.strip()]
     queries = [q.strip() for q in args.queries.split(",") if q.strip()] or list(DEFAULT_QUERIES)
-    # Searching each named streamer is how a roster of specific people is found.
-    search_terms = list(dict.fromkeys(queries + roster))
+    # Searching each named streamer is how a roster of specific people is found;
+    # priority names are searched too, so a favoured streamer is discovered even
+    # when no topic query happens to match their room.
+    search_terms = list(dict.fromkeys(queries + roster + priority))
     mature_terms = list(DEFAULT_MATURE_TERMS) + load_terms(args.mature_terms, "")
     rights = load_terms("", args.rights_file)
 
     log(COMPLIANCE_NOTICE)
     log(
         f"roster: {args.concurrency} room(s), viewers>={args.min_viewers}, "
-        f"mature={args.mature_policy}, require_rights={args.require_rights}, "
+        f"priority={priority or 'none'}, mature={args.mature_policy}, "
+        f"require_rights={args.require_rights}, "
         f"posting={'off (dry)' if args.dry else ('on' if args.live else 'packaged only')}"
     )
 
@@ -300,6 +320,7 @@ def main(argv: list[str] | None = None) -> int:
             decisions = select_rooms(
                 streams,
                 roster=roster,
+                priority=priority,
                 min_viewers=args.min_viewers,
                 mature_terms=mature_terms,
                 mature_policy=args.mature_policy,

@@ -7,6 +7,7 @@ can explain exactly where a job died.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 
@@ -375,6 +376,65 @@ def _clip_inserts(
     return inserts, records
 
 
+_AUDIO_SUFFIXES = {".mp3", ".m4a", ".aac", ".wav", ".ogg", ".opus", ".flac"}
+
+
+def _audio_files(directory: str | None) -> list[Path]:
+    if not directory:
+        return []
+    path = Path(directory)
+    if not path.is_dir():
+        return []
+    return sorted(
+        item
+        for item in path.iterdir()
+        if item.is_file() and item.suffix.lower() in _AUDIO_SUFFIXES
+    )
+
+
+def _music_track(options: ProjectOptions, clip_id: str) -> Path | None:
+    """The music bed for this clip: an explicit track, else a default one.
+
+    A named track is resolved against the working directory first, then against
+    the configured music folder. With no name, one file from ``CLIPBAIT_MUSIC_DIR``
+    is chosen by clip id, so different clips get different tracks without an
+    operator picking each one.
+    """
+    settings = get_settings()
+    if options.music:
+        candidate = Path(options.music)
+        if not candidate.exists() and settings.music_dir:
+            candidate = Path(settings.music_dir) / options.music
+        return candidate if candidate.exists() else None
+    tracks = _audio_files(settings.music_dir)
+    if not tracks:
+        return None
+    seed = int(hashlib.sha256(clip_id.encode("utf-8")).hexdigest(), 16)
+    return tracks[seed % len(tracks)]
+
+
+def _insert_sfx(
+    options: ProjectOptions,
+    inserts: list[tuple[Path, float, float]],
+    clip_id: str,
+) -> list[tuple[Path, float, float]]:
+    """A sound effect for each meme insert, drawn from the configured folder.
+
+    Best-effort: no folder, no inserts, or ``meme_sfx`` off means an empty list
+    and the clip renders exactly as before.
+    """
+    if not options.meme_sfx or not inserts:
+        return []
+    files = _audio_files(get_settings().meme_sfx_dir)
+    if not files:
+        return []
+    seed = int(hashlib.sha256(clip_id.encode("utf-8")).hexdigest(), 16)
+    out: list[tuple[Path, float, float]] = []
+    for index, (_asset, start, end) in enumerate(inserts):
+        out.append((files[(seed + index) % len(files)], start, end))
+    return out
+
+
 def _download_full(project: dict) -> dict:
     """Force the classic whole-file ingest (link-mode fallback)."""
     result = ingest_source(project, None)
@@ -486,6 +546,8 @@ def render_clip_record(
     inserts, insert_records = _clip_inserts(
         clip, transcript, plan, on_progress=on_progress
     )
+    music = _music_track(options, clip_id)
+    sfx = _insert_sfx(options, inserts, clip_id)
     result = render_clip(
         source,
         out_path,
@@ -498,6 +560,11 @@ def render_clip_record(
         hook=(clip.get("hook") or clip.get("title")) if clip.get("hook_titles", True) else None,
         chat=chat,
         inserts=inserts or None,
+        effect=options.effect,
+        music=music,
+        music_volume=options.music_volume,
+        sfx=sfx or None,
+        sfx_volume=get_settings().meme_sfx_volume,
         on_progress=on_progress,
     )
     updated = db.update(

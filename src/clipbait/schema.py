@@ -110,6 +110,16 @@ class ProjectOptions(BaseModel):
     meme_inserts: bool = True
     meme_insert_seconds: float = Field(default=2.0, ge=0.8, le=5.0)
     meme_max_inserts: int = Field(default=2, ge=1, le=6)
+    # A stylised look applied to the picture. Captions are burned *after* the
+    # effect, so text never judders or zooms with it. ``none`` is the default.
+    effect: Literal["none", "stopmotion", "punch"] = "none"
+    # A music bed mixed quietly under the speech. ``None`` uses the configured
+    # default track (``CLIPBAIT_MUSIC_DIR``); a name/path picks one specifically.
+    music: str | None = None
+    music_volume: float = Field(default=0.16, ge=0.0, le=1.0)
+    # Play a short sound effect (drawn from ``CLIPBAIT_MEME_SFX_DIR``) over each
+    # meme insert, so a cutaway lands with a punch instead of silently.
+    meme_sfx: bool = True
 
 
 class Project(BaseModel):
@@ -245,6 +255,12 @@ class MonitorOptions(BaseModel):
     meme_inserts: bool = True
     meme_insert_seconds: float = Field(default=2.0, ge=0.8, le=5.0)
     meme_max_inserts: int = Field(default=2, ge=1, le=6)
+    # Same look/music/sfx controls as a project, so a live clip gets the
+    # channel's style without a second config surface.
+    effect: Literal["none", "stopmotion", "punch"] = "none"
+    music: str | None = None
+    music_volume: float = Field(default=0.16, ge=0.0, le=1.0)
+    meme_sfx: bool = True
     # Chat is a reflex, not the moment: a chat spike only becomes a clip when
     # something actually happens on the stream (speech, loudness, or action).
     # Set this to clip raw chat spikes anyway.
