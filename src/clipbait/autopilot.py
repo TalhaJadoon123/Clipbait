@@ -217,6 +217,10 @@ def start_monitor(source: str, title: str, options: AutopilotOptions) -> str:
         hashtags=options.hashtags,
         max_clips=options.max_clips or 8,
         buffer_seconds=options.buffer_seconds,
+        auto_publish=options.live,
+        post_now=options.post_now,
+        publish_min_score=options.min_score,
+        campaign=options.campaign,
     )
     monitor = db.create_monitor(
         {

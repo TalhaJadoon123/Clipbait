@@ -308,6 +308,29 @@ def test_start_monitor_defaults_the_clip_cap(monkeypatch) -> None:
     assert db.get_monitor(monitor_id)["options"]["max_clips"] == 8
 
 
+def test_start_monitor_carries_the_publish_settings(monkeypatch) -> None:
+    from clipbait import live as live_mod
+
+    monkeypatch.setattr(live_mod, "start", lambda monitor_id: None)
+
+    from clipbait.autopilot import start_monitor
+
+    live_id = start_monitor(
+        "https://x/a",
+        "Room",
+        AutopilotOptions(live=True, post_now=True, min_score=20, campaign="c.json"),
+    )
+    live_opts = db.get_monitor(live_id)["options"]
+    assert live_opts["auto_publish"] is True
+    assert live_opts["post_now"] is True
+    assert live_opts["publish_min_score"] == 20
+    assert live_opts["campaign"] == "c.json"
+
+    # A dry run (not --live) must never auto-publish.
+    dry_id = start_monitor("https://x/b", "Room", AutopilotOptions(live=False))
+    assert db.get_monitor(dry_id)["options"]["auto_publish"] is False
+
+
 # ------------------------------------------------------------- money integration
 
 # Clips made here live in the session-wide test database, where every other

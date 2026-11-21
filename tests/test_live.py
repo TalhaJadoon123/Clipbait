@@ -1377,3 +1377,91 @@ def test_a_live_clip_carries_the_stream_hashtags(monkeypatch):
     runner._capture(spike, moment, "tags")
 
     assert (created["project"].get("options") or {}).get("hashtags") == ["kaicenat", "gta6"]
+
+
+# ------------------------------------------------------------- auto-publish
+
+
+class _SyncThread:
+    """A Thread that runs its target on start(), so tests stay deterministic."""
+
+    def __init__(self, target=None, daemon=None, name=None, **_kw):
+        self._target = target
+
+    def start(self):
+        if self._target is not None:
+            self._target()
+
+
+def _ready_clip(score: int) -> dict:
+    project = db.create_project({"title": "live publish", "source_kind": "live", "duration": 45.0})
+    return db.create_clip(
+        {
+            "project_id": project["id"],
+            "title": "moment",
+            "start": 5.0,
+            "end": 45.0,
+            "score": score,
+            "status": "ready",
+            "render_path": "projects/x/clip.mp4",
+        }
+    )
+
+
+def test_autopublish_posts_a_ready_clip_immediately(monkeypatch):
+    from clipbait import publish as publish_mod
+    from clipbait.publish.provider import PublishResult
+
+    monitor = make_monitor(auto_publish=True, post_now=True, publish_min_score=20)
+    runner = LiveRunner(monitor)
+    clip = _ready_clip(33)
+
+    calls: dict = {}
+
+    def fake_publish(clip_id, *, options=None, provider=None):
+        calls["clip_id"] = clip_id
+        calls["live"] = options.live
+        calls["post_now"] = options.post_now
+        return PublishResult(ok=True, url="https://youtu.be/x")
+
+    monkeypatch.setattr(publish_mod, "publish_clip", fake_publish)
+    monkeypatch.setattr(publish_mod, "publish_provider", lambda *a, **k: object())
+    monkeypatch.setattr("clipbait.live.orchestrator.threading.Thread", _SyncThread)
+
+    runner._autopublish(clip["id"], "mom_1")
+
+    assert calls == {"clip_id": clip["id"], "live": True, "post_now": True}
+
+
+def test_autopublish_respects_the_score_floor(monkeypatch):
+    from clipbait import publish as publish_mod
+
+    monitor = make_monitor(auto_publish=True, publish_min_score=40)
+    runner = LiveRunner(monitor)
+    clip = _ready_clip(22)
+
+    called: list = []
+    monkeypatch.setattr(publish_mod, "publish_clip", lambda *a, **k: called.append(1))
+    monkeypatch.setattr(publish_mod, "publish_provider", lambda *a, **k: object())
+    monkeypatch.setattr("clipbait.live.orchestrator.threading.Thread", _SyncThread)
+
+    runner._autopublish(clip["id"], "mom_1")
+
+    assert called == []  # below the floor: never sent
+
+
+def test_autopublish_survives_a_provider_error(monkeypatch):
+    from clipbait import publish as publish_mod
+
+    monitor = make_monitor(auto_publish=True)
+    runner = LiveRunner(monitor)
+    clip = _ready_clip(30)
+
+    def boom(*a, **k):
+        raise RuntimeError("postiz down")
+
+    monkeypatch.setattr(publish_mod, "publish_clip", boom)
+    monkeypatch.setattr(publish_mod, "publish_provider", lambda *a, **k: object())
+    monkeypatch.setattr("clipbait.live.orchestrator.threading.Thread", _SyncThread)
+
+    runner._autopublish(clip["id"], "mom_1")  # must not raise

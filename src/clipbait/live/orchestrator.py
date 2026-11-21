@@ -513,6 +513,8 @@ class LiveRunner:
                         self.monitor_id,
                         {"type": "clip_ready", "moment_id": moment["id"], "clip_id": clip_id},
                     )
+                    if getattr(self.options, "auto_publish", False):
+                        self._autopublish(clip_id, moment["id"])
 
             jobs.submit(
                 "live_clip",
@@ -591,6 +593,59 @@ class LiveRunner:
             self.monitor_id,
             {"type": "capture_skipped", "moment_id": moment_id, "error": error[:300]},
         )
+
+    def _autopublish(self, clip_id: str, moment_id: str) -> None:
+        """Post one freshly rendered live clip, off the render thread.
+
+        A render finishing should not wait for the round to end to be seen: an
+        unattended run posts each clip as it lands. The upload runs on its own
+        daemon thread so a slow or failed provider never stalls the next clip's
+        render, and a failure is left for the round-end publish to retry rather
+        than retried in a tight loop here.
+        """
+        options = self.options
+
+        def work() -> None:
+            try:
+                from ..publish import PublishOptions, publish_clip, publish_provider
+
+                clip = db.get_clip(clip_id) or {}
+                score = float(clip.get("score") or 0.0)
+                floor = float(getattr(options, "publish_min_score", 0.0) or 0.0)
+                if score < floor:
+                    log.info(
+                        "auto-publish skipped %s: score %.1f below %.1f", clip_id, score, floor
+                    )
+                    return
+                result = publish_clip(
+                    clip_id,
+                    options=PublishOptions(
+                        live=True,
+                        post_now=bool(getattr(options, "post_now", True)),
+                        campaign=getattr(options, "campaign", None),
+                    ),
+                    provider=publish_provider(),
+                )
+                _publish(
+                    self.monitor_id,
+                    {
+                        "type": "clip_published" if result.ok else "clip_publish_failed",
+                        "clip_id": clip_id,
+                        "moment_id": moment_id,
+                        "url": result.url,
+                        "error": result.error,
+                    },
+                )
+                log.info(
+                    "auto-published %s: ok=%s url=%s",
+                    clip_id,
+                    result.ok,
+                    result.url or result.error,
+                )
+            except Exception as exc:  # noqa: BLE001 - publishing must never kill capture
+                log.warning("auto-publish failed for %s: %s", clip_id, exc)
+
+        threading.Thread(target=work, daemon=True, name=f"autopublish-{clip_id}").start()
 
     def _clipworthy(self, signal: SpikeSignal) -> bool:
         """A chat spike is a reflex; a clip needs something on the stream.

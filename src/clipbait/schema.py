@@ -249,6 +249,15 @@ class MonitorOptions(BaseModel):
     # something actually happens on the stream (speech, loudness, or action).
     # Set this to clip raw chat spikes anyway.
     chat_only_clips: bool = False
+    # Post each clip the instant it finishes rendering instead of waiting for
+    # the round to end. This is what makes an unattended run feel continuous:
+    # a clip is live within a minute of the moment it captured, and a clip that
+    # lands just after a round boundary is still posted -- no straggler gap.
+    # The round-end publish stays on as a safety net and a retry for failures.
+    auto_publish: bool = False
+    post_now: bool = True  # auto_publish sends immediately, not at the best window
+    publish_min_score: float = 0.0  # auto_publish only posts clips at or above this
+    campaign: str | None = None  # campaign rules that gate the auto-published copy
 
 
 class LiveMonitor(BaseModel):
