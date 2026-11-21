@@ -399,9 +399,15 @@ class HttpMemeProvider:
             raise MemeError("meme search did not return JSON") from exc
 
         results = _dot_get(body, self.settings.meme_search_results)
+        # Tolerate a wrapped list ({"data": {"results": [...]}}) by unwrapping
+        # once more, and a single-object response (a "random meme" endpoint that
+        # returns one item instead of a list) by treating it as one result.
+        if isinstance(results, dict) and self.settings.meme_search_results:
+            nested = _dot_get(results, self.settings.meme_search_results)
+            if nested is not None:
+                results = nested
         if isinstance(results, dict):
-            # One level of tolerance for {"data": {"results": [...]}} shapes.
-            results = _dot_get(results, self.settings.meme_search_results)
+            results = [results]
         if not isinstance(results, list):
             raise MemeError("meme search response had no result list")
 

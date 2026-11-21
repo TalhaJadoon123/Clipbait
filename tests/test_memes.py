@@ -319,6 +319,60 @@ def test_search_provider_prefers_the_first_resolvable_video_path(monkeypatch) ->
     assert HttpMemeProvider(replace(settings, meme_search_video=""))._video_paths() == ["url"]
 
 
+def test_search_provider_accepts_a_single_object_response(monkeypatch) -> None:
+    # A "random meme" endpoint (e.g. meme-api.com) returns one object, not a
+    # list. Treat it as a single result so image memes work without a search API.
+    from dataclasses import replace
+
+    from clipbait.memes import HttpMemeProvider
+
+    settings = replace(
+        get_settings(),
+        meme_search_url="https://meme-api.com/gimme",
+        meme_search_results="",
+        meme_search_video="url",
+    )
+    provider = HttpMemeProvider(settings)
+
+    class _Resp:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {
+                "postLink": "https://reddit.com/r/memes/comments/x",
+                "url": "https://i.redd.it/abc.jpg",
+                "title": "a meme",
+            }
+
+    monkeypatch.setattr("clipbait.memes.providers.httpx.get", lambda *a, **k: _Resp())
+    assert provider._search("shock") == ["https://i.redd.it/abc.jpg"]
+
+
+def test_search_provider_tolerates_a_wrapped_result_list(monkeypatch) -> None:
+    from dataclasses import replace
+
+    from clipbait.memes import HttpMemeProvider
+
+    settings = replace(
+        get_settings(),
+        meme_search_url="https://api.example/memes",
+        meme_search_results="data",
+        meme_search_video="url",
+    )
+    provider = HttpMemeProvider(settings)
+
+    class _Resp:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {"data": {"results": [{"url": "https://cdn/a.jpg"}]}}
+
+    monkeypatch.setattr("clipbait.memes.providers.httpx.get", lambda *a, **k: _Resp())
+    assert provider._search("shock") == ["https://cdn/a.jpg"]
+
+
 def test_request_cache_key_is_stable_and_specific() -> None:
     base = MemeRequest(prompt="p", duration=2.0, width=1080, height=1920)
     same = MemeRequest(prompt="p", duration=2.0, width=1080, height=1920)
