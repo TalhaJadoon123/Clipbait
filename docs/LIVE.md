@@ -299,6 +299,31 @@ curl -N localhost:8000/api/v1/live/monitors/<id>/events   # SSE
 Monitors are in-memory runners backed by database rows. Restarting the server
 stops active monitors; the rows, chat history and moments remain for inspection.
 
+### Unattended
+
+`clipbait autopilot` batches: it renders clips during a round and hands them to
+the publisher when the round ends. To keep watching a stream on its own,
+`scripts/supervise_live.py` pins one autopilot to a named streamer's *current*
+live room — it re-resolves the room on each check, restarts the child when the
+room changes or the child exits, and stops it when the streamer goes offline.
+
+```bash
+.venv/bin/python scripts/supervise_live.py \
+  --match "kai cenat" --query "gta 6" --platform shorts \
+  --live --now --minutes 30 --threshold 2.0 --content-threshold 1.3 --min-score 20
+```
+
+With `--live`, each clip is posted **the moment it renders**, not at the round's
+end (`MonitorOptions.auto_publish`): the round-end publish stays on as a safety
+net and a retry for anything that failed. Uploads are serialized so clips that
+land close together cannot race the provider's upload, and every post goes to the
+destination the run was set up for (`--platform`), never the money layer's
+recommended network — so a run only ever hits a channel that is actually
+connected.
+
+Run it as a systemd user service so it survives logout and reboot; the repo ships
+a template at [`docs/clipbait-autopilot.service`](clipbait-autopilot.service).
+
 ---
 
 ## Tuning
