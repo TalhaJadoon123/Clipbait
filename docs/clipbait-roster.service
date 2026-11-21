@@ -34,7 +34,8 @@ Type=simple
 WorkingDirectory=%h/Repos/Clipbait
 Environment=PYTHONUNBUFFERED=1
 ExecStart=%h/Repos/Clipbait/.venv/bin/python %h/Repos/Clipbait/scripts/supervise_roster.py \
-  --queries "gta 6,just chatting,fortnite,valorant,music" \
+  --queries "gta 6,just chatting,fortnite,valorant,music,ishowspeed" \
+  --priority "ishowspeed" \
   --min-viewers 3000 \
   --concurrency 1 \
   --per-query 8 \
@@ -48,6 +49,12 @@ ExecStart=%h/Repos/Clipbait/.venv/bin/python %h/Repos/Clipbait/scripts/supervise
   --min-score 15 \
   --max-clips 6 \
   --hashtags "#shorts #clips #live"
+# Channel look is on by default where it costs no quality: meme insert sound
+# effects come from CLIPBAIT_MEME_SFX_DIR, and a music bed is mixed when
+# CLIPBAIT_MUSIC_DIR has tracks. A whole-clip stylised effect is opt-in because
+# stop-motion halves the frame rate -- append it after `--`, e.g.:
+#   -- --effect stopmotion
+#   -- --effect punch --music hype.mp3
 Restart=always
 RestartSec=30
 Nice=5
