@@ -144,7 +144,24 @@ class PostizProvider:
         if response.status_code >= 400:
             message, code = _error_message(payload, response)
             raise ProviderError(message, status=response.status_code, code=code, body=payload)
-        items = payload if isinstance(payload, list) else payload.get("integrations") or []
+        return self._integration_items(payload)
+
+    @staticmethod
+    def _integration_items(payload) -> list[dict]:
+        """Pull the channel list out of whatever envelope the API answered with.
+
+        The public API returns a *bare JSON array*, but ``_json_body`` wraps a
+        list as ``{"data": [...]}`` to keep its own shape uniform, and some
+        builds nest the list under ``integrations``. Reading only
+        ``{"integrations": [...]}`` silently saw the real instance as empty.
+        """
+        items = payload
+        if isinstance(items, dict):
+            items = items.get("integrations") or items.get("data") or []
+        if isinstance(items, dict):
+            items = items.get("integrations") or []
+        if not isinstance(items, list):
+            return []
         return [item for item in items if isinstance(item, dict)]
 
     def _integration_id(self, postiz_type: str) -> str:

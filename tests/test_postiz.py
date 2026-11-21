@@ -221,6 +221,21 @@ def test_postiz_refuses_when_the_channel_is_not_connected(monkeypatch, tmp_path:
     assert api.uploads == []  # nothing was uploaded for a channel that cannot post
 
 
+def test_postiz_reads_a_bare_array_integrations_response(monkeypatch) -> None:
+    # The real public API answers with a *bare JSON array*. The original code
+    # only understood {"integrations": [...]}, so it read a live instance as
+    # having no channel and refused every post.
+    class ArrayResponse:
+        status_code = 200
+        text = "[]"
+
+        def json(self):
+            return [{"id": "int_yt", "identifier": "youtube", "disabled": False}]
+
+    monkeypatch.setattr(postiz_module.httpx, "get", lambda *a, **k: ArrayResponse())
+    assert PostizProvider("pz_secret")._integration_id("youtube") == "int_yt"
+
+
 def test_postiz_upload_media_requires_an_id_and_path(monkeypatch, tmp_path: Path) -> None:
     api = PostizApi(upload={})
     monkeypatch.setattr(postiz_module.httpx, "post", api.post)
