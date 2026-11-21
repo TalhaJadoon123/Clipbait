@@ -662,7 +662,11 @@ def test_probe_source(tmp_path):
     assert probe_source(source).width == 160
 
 
-def test_tracker_without_opencv(tmp_path):
+def test_tracker_without_opencv(monkeypatch, tmp_path):
+    # Simulate an absent OpenCV so the fallback path is exercised even in a venv
+    # that installed the vision extra; a bare `available() is False` assertion
+    # only held when OpenCV happened to be missing.
+    monkeypatch.setitem(sys.modules, "cv2", None)
     assert available() is False
     source = make_video(tmp_path / "faces.mp4", seconds=1, size="160x90")
     assert sample_faces(source, 0, 1) == []

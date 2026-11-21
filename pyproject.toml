@@ -30,17 +30,20 @@ dependencies = [
 # Local transcription (no cloud key required).
 whisper = ["faster-whisper>=1.0.0"]
 # Face-aware reframing. Falls back to motion/centre crop when absent.
-vision = ["opencv-python-headless>=4.9", "numpy>=1.26"]
+# Pinned below 5.x: OpenCV 5 removed the shipped Haar cascade API
+# (``cv2.CascadeClassifier`` / ``cv2.data.haarcascades``) that this tracker
+# relies on, so an unpinned install silently breaks face tracking.
+vision = ["opencv-python-headless>=4.9,<5", "numpy>=1.26"]
 # Keyless YouTube live-chat ingestion.
-live = ["pytchat>=0.5.8"]
+live = ["pytchat>=0.5.5"]
 # Blur-pad, split-screen and B-roll helpers.
 media = ["Pillow>=10.0"]
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.5", "numpy>=1.26"]
 all = [
   "faster-whisper>=1.0.0",
-  "opencv-python-headless>=4.9",
+  "opencv-python-headless>=4.9,<5",
   "numpy>=1.26",
-  "pytchat>=0.5.8",
+  "pytchat>=0.5.5",
   "Pillow>=10.0",
 ]
 
