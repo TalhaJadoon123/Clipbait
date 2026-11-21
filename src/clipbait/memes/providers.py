@@ -49,6 +49,16 @@ _QUERY_STOPWORDS = {
 }
 
 
+def _query_words(text: str) -> list[str]:
+    """Searchable tokens from a prompt fragment: >2 chars, no stopwords."""
+    cleaned = "".join(ch if ch.isalnum() or ch in " -'" else " " for ch in text)
+    return [
+        word
+        for word in cleaned.split()
+        if len(word) > 2 and word.lower() not in _QUERY_STOPWORDS
+    ]
+
+
 class MemeError(RuntimeError):
     pass
 
@@ -261,8 +271,9 @@ class HttpMemeProvider:
     Everything else - query param, auth style, result limit - is configurable.
 
     Results are tried in order. A dead CDN, an image-only result or a size-cap
-    breach skips to the next candidate, and an empty list raises :class:`MemeError`
-    so the pipeline degrades to "no insert".
+    breach skips to the next candidate. Queries are tried in order too (see
+    :meth:`queries_for`), so a clip only ends up with no insert when the library
+    is unreachable, not because one query happened to return nothing.
     """
 
     name = "search"
@@ -277,24 +288,38 @@ class HttpMemeProvider:
     def available(self) -> bool:
         return bool(self.settings.meme_search_url)
 
-    def query_for(self, request: MemeRequest) -> str:
-        """Turn an insert prompt into a short library search.
+    def queries_for(self, request: MemeRequest) -> list[str]:
+        """Ordered library searches, most topical first.
 
-        Insert prompts look like ``reaction b-roll for shock: and then he...``.
-        The production prefix is dropped, but its signal words ("shock",
-        "failure") are kept because they are excellent meme queries; stopwords
-        are removed so the search is not literally "and then the".
+        Insert prompts look like
+        ``reaction b-roll for surprise, awe: <spoken words>``. A single signal
+        word ("surprise") is the best query: it names the moment's emotion and a
+        meme library always answers it. Two spoken words follow as a topical
+        long shot, then a broad "reaction" that cannot miss.
+
+        Every query stays short on purpose. Long queries over-constrain the
+        search and return nothing -- six words joined together ("surprise awe
+        story peak just now") is why inserts silently disappeared from clips.
         """
         head, _, tail = request.prompt.partition(":")
-        text = "".join(
-            ch if ch.isalnum() or ch in " -'" else " " for ch in f"{head} {tail}"
-        ).replace("reaction b-roll", " ")
-        words = [
-            word
-            for word in text.split()
-            if len(word) > 2 and word.lower() not in _QUERY_STOPWORDS
-        ][:6]
-        return " ".join(words) or "reaction"
+        signals = _query_words(head.replace("reaction b-roll", " "))
+        content = _query_words(tail)
+
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for query in (
+            signals[0] if signals else "",
+            " ".join(content[:2]),
+            "reaction",
+        ):
+            if query and query not in seen:
+                seen.add(query)
+                ordered.append(query)
+        return ordered
+
+    def query_for(self, request: MemeRequest) -> str:
+        """The single best search query -- the head of :meth:`queries_for`."""
+        return self.queries_for(request)[0]
 
     def generate(self, request: MemeRequest, dest_dir: Path) -> Path | None:
         if not self.url:
@@ -303,17 +328,30 @@ class HttpMemeProvider:
         if target.exists() and target.stat().st_size > 0:
             return target
 
-        candidates = self._search(self.query_for(request))
-        if not candidates:
-            raise MemeError("meme search returned no results")
-        for url in candidates:
+        # Walk the queries most-topical first and stop at the first playable
+        # asset. An empty search is not a failure on its own -- a later, broader
+        # query still gets the clip its cutaway.
+        last_error: MemeError | None = None
+        saw_candidate = False
+        for query in self.queries_for(request):
             try:
-                _download_stream(url, target)
-            except (httpx.HTTPError, MemeError, OSError) as exc:
-                log.debug("meme candidate skipped (%s): %s", url, exc)
+                candidates = self._search(query)
+            except MemeError as exc:
+                last_error = exc
                 continue
-            if target.exists() and target.stat().st_size > 0:
-                return target
+            saw_candidate = saw_candidate or bool(candidates)
+            for url in candidates:
+                try:
+                    _download_stream(url, target)
+                except (httpx.HTTPError, MemeError, OSError) as exc:
+                    log.debug("meme candidate skipped (%s): %s", url, exc)
+                    continue
+                if target.exists() and target.stat().st_size > 0:
+                    return target
+        if last_error is not None:
+            raise last_error
+        if not saw_candidate:
+            raise MemeError("meme search returned no results")
         raise MemeError("meme search returned no playable video")
 
     # ---------------------------------------------------------------- helpers

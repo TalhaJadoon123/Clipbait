@@ -978,13 +978,44 @@ def test_http_provider_requires_a_url(tmp_path):
         provider.generate(mp.MemeRequest("p", 1, 10, 10), tmp_path)
 
 
-def test_http_provider_query_is_a_meme_search():
+def test_http_provider_query_is_a_short_meme_search():
     provider = mp.HttpMemeProvider(search_settings())
     request = mp.MemeRequest(
         "reaction b-roll for shock, failure: and then the system totally broke", 2, 10, 10
     )
-    assert provider.query_for(request) == "shock failure system totally broke"
+    # One signal word leads (short queries are what a library actually answers),
+    # the spoken words are the topical fallback, then the always-hits default.
+    assert provider.query_for(request) == "shock"
+    assert provider.queries_for(request) == ["shock", "system totally", "reaction"]
+    # A prompt with no signal and no spoken words still gets a usable query.
     assert provider.query_for(mp.MemeRequest("...", 1, 10, 10)) == "reaction"
+
+
+def test_http_provider_falls_back_to_a_broader_query(tmp_path, monkeypatch):
+    # A topical query that returns nothing must not leave the clip meme-less:
+    # generate() walks the ordered queries and uses the first that answers.
+    provider = mp.HttpMemeProvider(search_settings())
+    request = mp.MemeRequest("reaction b-roll for surprise: sensors everywhere", 1, 10, 10)
+    seen_queries: list[str] = []
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        seen_queries.append(params.get("q"))
+        if params.get("q") == "reaction":
+            body = {"data": [{"media": {"mp4": {"url": "https://cdn/yes.mp4"}}}]}
+        else:
+            body = {"data": []}
+        return SimpleNamespace(status_code=200, text="", json=lambda: body)
+
+    def fake_download(url, target):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"video")
+
+    monkeypatch.setattr(mp.httpx, "get", fake_get)
+    monkeypatch.setattr(mp, "_download_stream", fake_download)
+
+    result = provider.generate(request, tmp_path)
+    assert result is not None and result.read_bytes() == b"video"
+    assert seen_queries == ["surprise", "sensors everywhere", "reaction"]
 
 
 def test_http_provider_searches_and_downloads_the_first_playable(tmp_path, monkeypatch):
