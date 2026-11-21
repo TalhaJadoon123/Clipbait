@@ -1475,3 +1475,29 @@ def test_autopublish_survives_a_provider_error(monkeypatch):
     monkeypatch.setattr("clipbait.live.orchestrator.threading.Thread", _SyncThread)
 
     runner._autopublish(clip["id"], "mom_1")  # must not raise
+
+
+def test_autopublish_serializes_uploads(monkeypatch):
+    """Two clips landing together must not hand the provider two uploads at once."""
+    from clipbait import publish as publish_mod
+    from clipbait.live import orchestrator as orch
+    from clipbait.publish.provider import PublishResult
+
+    monitor = make_monitor(auto_publish=True, platform="shorts")
+    runner = LiveRunner(monitor)
+    clip = _ready_clip(30)
+
+    seen: dict = {}
+
+    def fake_publish(clip_id, *, options=None, provider=None):
+        seen["locked_during_upload"] = orch._PUBLISH_LOCK.locked()
+        return PublishResult(ok=True)
+
+    monkeypatch.setattr(publish_mod, "publish_clip", fake_publish)
+    monkeypatch.setattr(publish_mod, "publish_provider", lambda *a, **k: object())
+    monkeypatch.setattr("clipbait.live.orchestrator.threading.Thread", _SyncThread)
+
+    runner._autopublish(clip["id"], "mom_1")
+
+    assert seen["locked_during_upload"] is True  # held while the provider is called
+    assert not orch._PUBLISH_LOCK.locked()  # and released afterwards

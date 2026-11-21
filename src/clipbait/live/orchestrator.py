@@ -30,6 +30,13 @@ log = logging.getLogger("clipbait.live")
 _RUNNERS: dict[str, LiveRunner] = {}
 _LOCK = threading.Lock()
 
+# One upload at a time. Postiz refreshes the channel token and fetches the media
+# for each post; several clips landing together would run those concurrently,
+# and a burst of 20-30 MB fetches plus a racing token refresh is exactly how a
+# post fails with "fetch failed" or a spurious re-authenticate. Serializing
+# costs nothing here -- renders are minutes apart -- and keeps every post clean.
+_PUBLISH_LOCK = threading.Lock()
+
 
 def _publish(monitor_id: str, event: dict) -> None:
     bus.publish(f"monitor:{monitor_id}", event)
@@ -602,6 +609,12 @@ class LiveRunner:
         daemon thread so a slow or failed provider never stalls the next clip's
         render, and a failure is left for the round-end publish to retry rather
         than retried in a tight loop here.
+
+        Uploads are serialized on ``_PUBLISH_LOCK``: two clips that land close
+        together would otherwise hand two 20-30 MB renders to the provider at
+        once, and that burst is what makes a post fail with ``fetch failed`` or
+        a spurious re-authenticate. One at a time is free here -- renders are
+        minutes apart -- and every post leaves cleanly.
         """
         options = self.options
 
@@ -617,19 +630,20 @@ class LiveRunner:
                         "auto-publish skipped %s: score %.1f below %.1f", clip_id, score, floor
                     )
                     return
-                result = publish_clip(
-                    clip_id,
-                    options=PublishOptions(
-                        live=True,
-                        post_now=bool(getattr(options, "post_now", True)),
-                        campaign=getattr(options, "campaign", None),
-                        # Post to the destination this run was set up for (the
-                        # connected channel), not the money layer's recommended
-                        # platform, which the account may not even have.
-                        platforms=(options.platform,),
-                    ),
-                    provider=publish_provider(),
-                )
+                with _PUBLISH_LOCK:
+                    result = publish_clip(
+                        clip_id,
+                        options=PublishOptions(
+                            live=True,
+                            post_now=bool(getattr(options, "post_now", True)),
+                            campaign=getattr(options, "campaign", None),
+                            # Post to the destination this run was set up for (the
+                            # connected channel), not the money layer's recommended
+                            # platform, which the account may not even have.
+                            platforms=(options.platform,),
+                        ),
+                        provider=publish_provider(),
+                    )
                 _publish(
                     self.monitor_id,
                     {
