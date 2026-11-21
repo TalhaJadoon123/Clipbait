@@ -314,8 +314,14 @@ class HlsRecorder(Recorder):
                 break
         concat = concat_file(segments, self.directory / "slice.ffconcat")
         out.parent.mkdir(parents=True, exist_ok=True)
-        # Seek before -i: ffmpeg then decodes only from the nearest keyframe and
-        # discards the gap, instead of decoding the whole window from zero.
+        # Seek *after* -i, not before it. An input seek (``-ss`` before ``-i``)
+        # on a concat of TS segments lands the video on the nearest keyframe --
+        # up to a second *after* the audio's seek point -- so the slice opens
+        # with audio that has no matching video and every burned caption sits
+        # that far off the lips. As an output seek, ffmpeg decodes from the head
+        # of the concatenated window (only the offset we already trimmed, so a
+        # few seconds at most) and applies one seek point to both streams, which
+        # keeps video and audio starting together.
         cmd = [
             get_settings().ffmpeg,
             "-hide_banner",
@@ -324,10 +330,10 @@ class HlsRecorder(Recorder):
             "concat",
             "-safe",
             "0",
-            "-ss",
-            f"{offset:.3f}",
             "-i",
             str(concat),
+            "-ss",
+            f"{offset:.3f}",
             "-t",
             f"{max(0.5, end - start):.3f}",
         ]

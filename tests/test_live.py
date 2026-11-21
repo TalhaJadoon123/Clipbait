@@ -654,6 +654,32 @@ def test_hls_slice(monkeypatch, tmp_path):
     assert "seg_000000.ts" in concat and "seg_000001.ts" in concat
 
 
+def test_hls_slice_seeks_after_input_so_av_stay_aligned(monkeypatch, tmp_path):
+    """An input seek lands video on a keyframe and shreds lip-sync.
+
+    Seeking a concat of TS segments before ``-i`` starts the video at its first
+    keyframe (up to a second after the audio seek point), so a slice opens with
+    video that trails the audio and every caption is that far off the lips. The
+    seek must be an output option (after ``-i``) to keep the two in step.
+    """
+    rec = recorder.HlsRecorder("https://twitch.tv/x", tmp_path)
+    (tmp_path / "seg_000000.ts").write_bytes(b"a")
+    rec._segments = [recorder.Segment(tmp_path / "seg_000000.ts", 0.0, 4.0)]
+
+    captured: list[list[str]] = []
+
+    def fake_run(cmd, **_kwargs):
+        captured.append(list(cmd))
+        Path(cmd[-1]).write_bytes(b"video")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(recorder.media, "run", fake_run)
+    rec.slice(1.0, 3.0, tmp_path / "out.mp4")
+
+    cmd = captured[0]
+    assert cmd.index("-i") < cmd.index("-ss"), "slice must seek after -i to stay A/V aligned"
+
+
 def test_hls_start_and_stop(monkeypatch, tmp_path):
     monkeypatch.setattr(recorder, "resolve_live_streams", lambda _url: ["https://cdn/x.m3u8"])
     monkeypatch.setattr("clipbait.live.recorder.time.sleep", lambda *_: None)
