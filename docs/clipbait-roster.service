@@ -34,17 +34,18 @@ Type=simple
 WorkingDirectory=%h/Repos/Clipbait
 Environment=PYTHONUNBUFFERED=1
 ExecStart=%h/Repos/Clipbait/.venv/bin/python %h/Repos/Clipbait/scripts/supervise_roster.py \
-  --queries "gta 6,just chatting,fortnite,valorant,minecraft,music,irl" \
+  --queries "gta 6,just chatting,fortnite,valorant,music" \
   --min-viewers 3000 \
   --concurrency 1 \
-  --check 150 \
+  --per-query 8 \
+  --check 300 \
   --platform shorts \
   --live \
   --now \
   --minutes 30 \
   --threshold 2.0 \
   --content-threshold 1.3 \
-  --min-score 20 \
+  --min-score 15 \
   --max-clips 6 \
   --hashtags "#shorts #clips #live"
 Restart=always
