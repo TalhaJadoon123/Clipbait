@@ -324,6 +324,34 @@ connected.
 Run it as a systemd user service so it survives logout and reboot; the repo ships
 a template at [`docs/clipbait-autopilot.service`](clipbait-autopilot.service).
 
+### Across many streamers (roster)
+
+`supervise_live.py` watches one person. To watch whoever is biggest *right now*,
+`scripts/supervise_roster.py` searches the live filter for a set of topics (and
+optionally a list of named streamers), ranks the rooms by concurrent viewers, and
+keeps the autopilot on the top `--concurrency` of them, rotating as streams end:
+
+```bash
+.venv/bin/python scripts/supervise_roster.py \
+  --queries "gta 6,just chatting,fortnite,valorant,music" \
+  --min-viewers 3000 --concurrency 1 \
+  --platform shorts --live --now --threshold 2.0 --content-threshold 1.3 --min-score 20
+```
+
+Two policies keep a roster run honest and safe, and both are off/blank by default:
+
+* **Mature rooms.** `--mature-terms` (on top of a built-in adult list) plus
+  `--mature-policy skip` keeps explicit streams out of the channel. The upload
+  API cannot set YouTube's age gate — that stays a Studio decision — so the only
+  reliable lever here is not to clip it.
+* **Rights.** `--rights-file` + `--require-rights` restrict posting to channels
+  you have cleared. Clipping someone else's stream is not automatically
+  monetizable; keep the top of the channel only for streamers you are allowed to.
+
+A 4-core box should stay at `--concurrency 1`: each room is its own autopilot
+process with its own model and renders. The service template is at
+[`docs/clipbait-roster.service`](clipbait-roster.service).
+
 ---
 
 ## Tuning

@@ -1,0 +1,56 @@
+# Clipbait roster autopilot as a systemd user service.
+#
+# Keeps the autopilot on the biggest famous live rooms around the clock: it
+# searches YouTube's live filter for the topics below, ranks what is live by
+# concurrent viewers, and clips the top one, swapping to the next as rooms end.
+# With --live, each clip is posted the moment it renders.
+#
+# Install (user scope, no root):
+#   mkdir -p ~/.config/systemd/user
+#   cp docs/clipbait-roster.service ~/.config/systemd/user/
+#   $EDITOR ~/.config/systemd/user/clipbait-roster.service   # set topics + policy
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now clipbait-roster.service
+#   journalctl --user -u clipbait-roster.service -f
+#
+# Concurrency: keep it at 1 unless the box has spare CPU and RAM. Each room is a
+# separate autopilot process with its own whisper model and ffmpeg renders; on a
+# 4-core / 11 GiB box two can swap or OOM. Raise it only if you have headroom.
+#
+# Rights: clipping other people's streams is only safe to *monetize* when the
+# streamer allows it (an official clipping campaign, a shared-revenue program).
+# Add cleared channels to a rights file and pass --require-rights so nothing
+# unlicensed is posted to your channel by accident.
+
+[Unit]
+Description=Clipbait roster autopilot - clip the biggest live rooms and post Shorts
+Documentation=https://github.com/TalhaJadoon123/Clipbait
+After=network-online.target postiz.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Repos/Clipbait
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/Repos/Clipbait/.venv/bin/python %h/Repos/Clipbait/scripts/supervise_roster.py \
+  --queries "gta 6,just chatting,fortnite,valorant,minecraft,music,irl" \
+  --min-viewers 3000 \
+  --concurrency 1 \
+  --check 150 \
+  --platform shorts \
+  --live \
+  --now \
+  --minutes 30 \
+  --threshold 2.0 \
+  --content-threshold 1.3 \
+  --min-score 20 \
+  --max-clips 6 \
+  --hashtags "#shorts #clips #live"
+Restart=always
+RestartSec=30
+Nice=5
+TimeoutStopSec=60
+
+[Install]
+WantedBy=default.target
