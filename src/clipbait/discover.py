@@ -203,6 +203,32 @@ def search_live(
     return streams[:limit]
 
 
+def resolve_channel_live(channel: str, *, timeout: int = 60, runner=_runner) -> LiveStream | None:
+    """Resolve a channel's *current* live room from its ``/live`` URL.
+
+    A text search misses a streamer whose live titles never contain their own
+    name (iShowSpeed streams "EXPLORING VICE CITY", not "iShowSpeed"). The
+    channel's ``/live`` handle points at whatever they are streaming right now,
+    or errors when they are offline, which is exactly the signal a supervisor
+    needs.
+    """
+    target = (channel or "").strip()
+    if not target:
+        return None
+    if not target.startswith("http"):
+        target = f"https://www.youtube.com/@{target.lstrip('@')}"
+    if not target.rstrip("/").endswith("/live"):
+        target = target.rstrip("/") + "/live"
+    try:
+        detail = runner(_base() + ["-J", "--no-playlist", target], timeout)
+    except Exception as exc:  # noqa: BLE001 - offline or a scheduled premiere is normal
+        log.debug("channel resolve failed for %s: %s", channel, exc)
+        return None
+    if not detail or not detail.get("is_live"):
+        return None
+    return _to_stream(detail, require_live=True)
+
+
 def best(streams: list[LiveStream]) -> LiveStream | None:
     return streams[0] if streams else None
 

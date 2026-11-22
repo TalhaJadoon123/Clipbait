@@ -137,3 +137,51 @@ def test_markdown_table_carries_the_evidence() -> None:
 )
 def test_duration_format(seconds, expected) -> None:
     assert discover.fmt_duration(seconds) == expected
+
+
+def test_resolve_channel_live_builds_the_live_url_from_a_handle() -> None:
+    seen: list[str] = []
+
+    def runner(args: list[str], timeout: int) -> dict:
+        seen.append(args[-1])
+        return entry("live1", "EXPLORING VICE CITY", "iShowSpeed", viewers=42000)
+
+    stream = discover.resolve_channel_live("IShowSpeed", runner=runner)
+
+    # The handle becomes the channel's /live URL so a title that omits the
+    # streamer's name still resolves to the right room.
+    assert seen == ["https://www.youtube.com/@IShowSpeed/live"]
+    assert stream is not None and stream.channel == "iShowSpeed"
+    assert stream.url.endswith("live1")
+
+
+def test_resolve_channel_live_accepts_a_full_url_without_doubling_live() -> None:
+    seen: list[str] = []
+
+    def runner(args: list[str], timeout: int) -> dict:
+        seen.append(args[-1])
+        return entry("live2", "stream", "Speed", viewers=10)
+
+    discover.resolve_channel_live("https://www.youtube.com/@IShowSpeed/live", runner=runner)
+    assert seen == ["https://www.youtube.com/@IShowSpeed/live"]
+
+
+def test_resolve_channel_live_is_none_when_offline() -> None:
+    def runner(args: list[str], timeout: int) -> dict:
+        raise discover.DiscoverError("This live event will begin in 7 hours.")
+
+    assert discover.resolve_channel_live("IShowSpeed", runner=runner) is None
+
+
+def test_resolve_channel_live_is_none_when_not_live() -> None:
+    def runner(args: list[str], timeout: int) -> dict:
+        return {"id": "vod", "is_live": False, "title": "old"}
+
+    assert discover.resolve_channel_live("IShowSpeed", runner=runner) is None
+
+
+def test_resolve_channel_live_blank_handle_is_none_without_a_call() -> None:
+    def runner(args: list[str], timeout: int) -> dict:  # pragma: no cover - must not run
+        raise AssertionError("blank channel should not hit yt-dlp")
+
+    assert discover.resolve_channel_live("   ", runner=runner) is None

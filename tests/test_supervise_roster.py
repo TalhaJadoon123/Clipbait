@@ -151,3 +151,28 @@ def test_build_command_dry_run_never_posts():
     )
     command = sup.build_autopilot_command(_namespace(dry=True), allowed)
     assert "--live" not in command and "--now" not in command
+
+
+def test_resolve_channels_keeps_only_live_rooms(monkeypatch):
+    from clipbait import discover
+
+    live = discover.LiveStream(
+        "YouTube", "iShowSpeed", "EXPLORING VICE CITY", "u-speed", 42000, "1h02m"
+    )
+
+    def fake(channel, *, timeout=60, runner=discover._runner):
+        return live if channel == "IShowSpeed" else None
+
+    monkeypatch.setattr(discover, "resolve_channel_live", fake)
+    rooms = sup.resolve_channels(["IShowSpeed", "OfflineGuy"], timeout=5)
+    assert [r.url for r in rooms] == ["u-speed"]
+
+
+def test_resolve_channels_survives_a_channel_that_errors(monkeypatch):
+    from clipbait import discover
+
+    def boom(channel, *, timeout=60, runner=discover._runner):
+        raise discover.DiscoverError("network")
+
+    monkeypatch.setattr(discover, "resolve_channel_live", boom)
+    assert sup.resolve_channels(["Broken"], timeout=5) == []

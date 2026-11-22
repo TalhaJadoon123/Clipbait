@@ -212,6 +212,27 @@ def discover_streams(queries, per_query: int, timeout: int):
     return list(seen.values())
 
 
+def resolve_channels(channels, timeout: int):
+    """Live rooms for a fixed list of channels, resolved from their /live URL.
+
+    A text search cannot find a streamer whose live titles omit their name
+    (iShowSpeed), so a named channel is checked directly. Offline channels drop
+    out silently; the rest of the roster still fills.
+    """
+    from clipbait import discover
+
+    found = []
+    for channel in channels:
+        try:
+            stream = discover.resolve_channel_live(channel, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 - an offline channel is normal
+            log(f"channel resolve failed for {channel!r}: {type(exc).__name__}: {exc}")
+            continue
+        if stream is not None:
+            found.append(stream)
+    return found
+
+
 def load_terms(value: str, path: str) -> list[str]:
     """Comma-separated terms plus any lines in a file (blank/# skipped)."""
     terms = [t.strip() for t in (value or "").split(",") if t.strip()]
@@ -247,6 +268,11 @@ def main(argv: list[str] | None = None) -> int:
         help="comma-separated streamer names to favour over bigger rooms while live",
     )
     parser.add_argument("--queries", default="", help="comma-separated live search topics")
+    parser.add_argument(
+        "--channels",
+        default="",
+        help="comma-separated channels/handles whose /live room is always considered",
+    )
     parser.add_argument("--concurrency", type=int, default=2, help="how many rooms to clip at once")
     parser.add_argument("--min-viewers", type=int, default=3000, help="only clip rooms at least this big")
     parser.add_argument("--per-query", type=int, default=12, help="rooms to rank per query")
@@ -287,6 +313,7 @@ def main(argv: list[str] | None = None) -> int:
     roster = [r.strip() for r in args.roster.split(",") if r.strip()]
     priority = [p.strip() for p in args.priority.split(",") if p.strip()]
     queries = [q.strip() for q in args.queries.split(",") if q.strip()] or list(DEFAULT_QUERIES)
+    channels = [c.strip() for c in args.channels.split(",") if c.strip()]
     # Searching each named streamer is how a roster of specific people is found;
     # priority names are searched too, so a favoured streamer is discovered even
     # when no topic query happens to match their room.
@@ -297,7 +324,8 @@ def main(argv: list[str] | None = None) -> int:
     log(COMPLIANCE_NOTICE)
     log(
         f"roster: {args.concurrency} room(s), viewers>={args.min_viewers}, "
-        f"priority={priority or 'none'}, mature={args.mature_policy}, "
+        f"priority={priority or 'none'}, channels={channels or 'none'}, "
+        f"mature={args.mature_policy}, "
         f"require_rights={args.require_rights}, "
         f"posting={'off (dry)' if args.dry else ('on' if args.live else 'packaged only')}"
     )
@@ -317,6 +345,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         while running:
             streams = discover_streams(search_terms, args.per_query, RESOLVE_TIMEOUT)
+            if channels:
+                seen_urls = {s.url for s in streams}
+                for stream in resolve_channels(channels, RESOLVE_TIMEOUT):
+                    if stream.url not in seen_urls:
+                        streams.append(stream)
+                        seen_urls.add(stream.url)
             decisions = select_rooms(
                 streams,
                 roster=roster,

@@ -34,7 +34,8 @@ Type=simple
 WorkingDirectory=%h/Repos/Clipbait
 Environment=PYTHONUNBUFFERED=1
 ExecStart=%h/Repos/Clipbait/.venv/bin/python %h/Repos/Clipbait/scripts/supervise_roster.py \
-  --queries "gta 6,gta6,gta,ishowspeed" \
+  --queries "gta 6,gta6,gta" \
+  --channels "https://www.youtube.com/@IShowSpeed" \
   --priority "ishowspeed" \
   --min-viewers 3000 \
   --concurrency 1 \
