@@ -529,6 +529,20 @@ def test_platform_override_changes_the_destination() -> None:
     assert provider.calls[0]["platforms"] == ["youtube", "instagram"]
 
 
+def test_platform_override_also_drives_caption_limits() -> None:
+    # The clip's own best-platform pick may be, say, LinkedIn (200-char titles);
+    # an explicit Shorts request must re-cap to YouTube's 100 and emit the
+    # youtube_* fields, not LinkedIn's.
+    clip = make_ready()
+    plan = plan_clip(
+        clip["id"], options=PublishOptions(platforms=("shorts",)), provider=FakeProvider()
+    )
+    assert plan.platform == "youtube"
+    assert plan.clipbait_platform == "shorts"
+    assert "youtube_title" in plan.fields
+    assert len(plan.fields["youtube_title"]) <= 100
+
+
 def test_provider_factory_uses_the_configured_timeout() -> None:
     # A vertical clip is tens of megabytes; a home uplink needs more than the
     # library default before the client gives up on the body.

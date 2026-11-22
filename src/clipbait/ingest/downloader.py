@@ -47,7 +47,7 @@ def source_kind_for(url: str) -> str:
     return "upload"
 
 
-def _ytdlp_base() -> list[str]:
+def _ytdlp_base(fragments: int = 4) -> list[str]:
     settings = get_settings()
     return [
         settings.ytdlp,
@@ -56,10 +56,12 @@ def _ytdlp_base() -> list[str]:
         "--newline",
         # Resume a partial `.part` file instead of starting a long download again.
         "--continue",
-        # 1080p is almost always a fragmented (DASH) download; fetching several
-        # fragments at once is a large, safe speedup over the serial default.
+        # Remote media arrives as many small fragments (DASH or HLS). Fetching
+        # several at once is a large, safe speedup over the serial default, and
+        # HLS section fetches in particular go from ~150 KB/s to the full pipe
+        # at eight.
         "--concurrent-fragments",
-        "4",
+        str(max(1, int(fragments))),
         "--retries",
         "10",
         "--fragment-retries",
@@ -316,22 +318,34 @@ def fetch_section(
 ) -> Path:
     """Download one ``[start, end]`` window of a remote video.
 
-    yt-dlp's ``--download-sections`` uses the platform's range/segment support,
-    so a 40-second clip out of a two-hour stream costs roughly 40 seconds of
-    transfer instead of two hours. Formats are merged to mp4 so the renderer
-    gets the same shape as a full download.
+    Why this is not obvious: YouTube's default formats are fragmented DASH mp4
+    served as one huge file. ``--download-sections`` hands those to ffmpeg,
+    which cannot seek a fragmented mp4, so it silently downloads from byte 0 —
+    minutes of random data before the requested moment, which is what made long
+    VODs stall. The **HLS (``m3u8``) renditions** are segmented, so ffmpeg can
+    seek straight to ``start``; pinning AVC HLS plus the native HLS downloader
+    (which fetches fragments in parallel) turns a 40 s window into ~35 s of
+    transfer at full 1080p instead of tens of minutes.
+
+    Falls back to the DASH/progressive formats for sources without HLS.
     """
     ensure_safe_url(url)
     start = max(0.0, float(start))
     end = max(start + 0.5, float(end))
     target.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        *_ytdlp_base(),
+        *_ytdlp_base(fragments=8),
+        # Seek straight to the moment: AVC HLS first (ffmpeg can seek it and it
+        # remuxes cleanly to mp4), then any HLS, then the unseekable fallbacks.
+        "--hls-prefer-native",
         "-f",
-        "bv*[height<=1080]+ba/b[height<=1080]/b",
+        (
+            "bv*[height<=1080][protocol^=m3u8][vcodec^=avc1]+ba[protocol^=m3u8]"
+            "/bv*[height<=1080][protocol^=m3u8]+ba[protocol^=m3u8]"
+            "/bv*[height<=1080]+ba/b[height<=1080]/b"
+        ),
         "--download-sections",
         f"*{start:.3f}-{end:.3f}",
-        "--force-keyframes-at-cuts",
         "--merge-output-format",
         "mp4",
         "-o",

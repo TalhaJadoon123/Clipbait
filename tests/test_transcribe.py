@@ -446,7 +446,7 @@ def test_auto_transcribe_delegates(monkeypatch):
     sentinel = Transcript(provider="sentinel")
 
     class Delegate:
-        def transcribe(self, audio, language="auto"):
+        def transcribe(self, audio, language="auto", *, source_url=None):
             return sentinel
 
     monkeypatch.setattr(auto, "resolve", lambda: Delegate())

@@ -89,3 +89,22 @@ def test_sendcmd_file_is_written(tmp_path: Path) -> None:
     target = plan.write_sendcmd(tmp_path / "moves.txt")
     assert target.read_text(encoding="utf-8").startswith("0.0000 crop@cam x 0;")
     assert plan.with_sendcmd(tmp_path / "b.txt").sendcmd_path.endswith("b.txt")
+
+def test_facecam_layout_splits_webcam_and_gameplay() -> None:
+    from clipbait.reframe import FACE_CAM_BOX, FACE_CAM_RATIO
+
+    plan = plan_reframe(Path("x.mp4"), 0, 20, 1920, 1080, mode="facecam")
+    assert plan.mode == "facecam"
+    assert plan.facecam_box == FACE_CAM_BOX
+    assert plan.facecam_ratio == pytest.approx(FACE_CAM_RATIO)
+    assert len(plan.crop_xs) == 1
+    # The game crop is biased right so the bottom-left webcam never appears twice.
+    scaled_w = round(1920 * 1920 / 1080)
+    assert plan.crop_xs[0] >= (scaled_w - 1080) * 0.5
+
+
+def test_facecam_box_and_ratio_are_clamped() -> None:
+    plan = plan_reframe(
+        Path("x.mp4"), 0, 10, 1920, 1080, mode="facecam", facecam_ratio=0.99
+    )
+    assert plan.facecam_ratio == pytest.approx(0.70)

@@ -407,3 +407,24 @@ def test_fixture_provider_is_cached(tmp_path: Path) -> None:
     second = provider.generate(request, tmp_path)
     assert second == first
     assert second.stat().st_mtime_ns == mtime
+
+
+def test_graph_facecam_stacks_webcam_over_gameplay() -> None:
+    from clipbait.reframe import FACE_CAM_BOX
+
+    plan = ReframePlan(
+        mode="facecam",
+        out_w=1080,
+        out_h=1920,
+        source_w=1920,
+        source_h=1080,
+        crop_xs=[800],
+        fps=30.0,
+        facecam_box=FACE_CAM_BOX,
+        facecam_ratio=0.52,
+    )
+    graph, _ = _graph(plan, None, fps=30.0, has_audio=True)
+    assert "split=2[fc0][gp0]" in graph
+    assert "[top][bot]vstack=inputs=2" in graph
+    # Captions still burn after the stack, so the seam text sits on top.
+    assert graph.index("vstack") < graph.index("null[v]")

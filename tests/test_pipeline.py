@@ -106,7 +106,7 @@ def test_process_project_reuses_the_cached_transcript(source, transcript, monkey
     calls = {"n": 0}
     original = transcriber.transcribe
 
-    def counted(audio, language="auto"):
+    def counted(audio, language="auto", *, source_url=None):
         calls["n"] += 1
         return original(audio, language)
 
@@ -287,8 +287,18 @@ def test_render_clip_record_error_branches(source, transcript):
         pipeline.render_clip_record(monkeypatch_clip["id"])
 
 
-def test_render_clip_inserts_broll_between_sentences(source):
-    """A real 6s render with one gap-triggered b-roll cutaway."""
+def test_render_clip_inserts_broll_between_sentences(source, monkeypatch):
+    """A real 6s render with one gap-triggered b-roll cutaway.
+
+    Memes now default off (a stock reaction clip reads as childish next to real
+    footage), so the test opts into the local fixture provider explicitly: the
+    subject here is the insert pipeline, not the provider default.
+    """
+    from clipbait.memes import providers as meme_providers
+
+    monkeypatch.setattr(
+        pipeline, "get_meme_provider", lambda: meme_providers.FixtureMemeProvider()
+    )
     project = make_project(source, clips=1, target_seconds=15)
     words = [
         Word(text="one", start=0.3, end=0.7),

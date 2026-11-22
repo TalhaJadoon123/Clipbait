@@ -524,6 +524,26 @@ def test_audio_rms_and_extract(tmp_path):
     assert media.audio_rms(junk) == []
 
 
+def test_audio_rms_numpy_matches_stdlib(tmp_path):
+    # The numpy fast path is an optimisation, not a behaviour change: it must
+    # return byte-identical timestamps and values to the stdlib loop, including
+    # for a trailing partial window.
+    np = pytest.importorskip("numpy")
+    import wave as _wave
+
+    source = make_video(tmp_path / "a.mp4", seconds=1, size="160x90")
+    audio = media.extract_audio(source, tmp_path / "out" / "audio.wav")
+
+    with _wave.open(str(audio), "rb") as handle:
+        rate = handle.getframerate()
+        window = 0.07
+        frames_per_window = max(1, int(rate * window))
+        stdlib = media._audio_rms_stdlib(handle, frames_per_window, window)
+    with _wave.open(str(audio), "rb") as handle:
+        vectorised = media._audio_rms_numpy(handle, np, frames_per_window, window)
+    assert stdlib == vectorised
+
+
 def test_thumbnail(tmp_path, monkeypatch):
     source = make_video(tmp_path / "t.mp4", seconds=1, size="160x90")
     target = tmp_path / "thumb.jpg"
@@ -978,30 +998,37 @@ def test_http_provider_requires_a_url(tmp_path):
         provider.generate(mp.MemeRequest("p", 1, 10, 10), tmp_path)
 
 
-def test_http_provider_query_is_a_short_meme_search():
+def test_http_provider_queries_are_topical_and_have_no_catch_all():
     provider = mp.HttpMemeProvider(search_settings())
     request = mp.MemeRequest(
         "reaction b-roll for shock, failure: and then the system totally broke", 2, 10, 10
     )
-    # One signal word leads (short queries are what a library actually answers),
-    # the spoken words are the topical fallback, then the always-hits default.
-    assert provider.query_for(request) == "shock"
-    assert provider.queries_for(request) == ["shock", "system totally", "reaction"]
-    # A prompt with no signal and no spoken words still gets a usable query.
-    assert provider.query_for(mp.MemeRequest("...", 1, 10, 10)) == "reaction"
+    # The spoken subject leads; there is deliberately no generic "reaction"
+    # fallback, because that is what returns an unfunny stock GIF.
+    queries = provider.queries_for(request)
+    assert queries[0] == "system totally"
+    assert "reaction" not in queries
+    assert provider.query_for(request) == "system totally"
+    assert provider.queries_for(mp.MemeRequest("...", 1, 10, 10)) == []
 
 
-def test_http_provider_falls_back_to_a_broader_query(tmp_path, monkeypatch):
-    # A topical query that returns nothing must not leave the clip meme-less:
-    # generate() walks the ordered queries and uses the first that answers.
+def test_http_provider_walks_queries_and_keeps_the_on_topic_hit(tmp_path, monkeypatch):
     provider = mp.HttpMemeProvider(search_settings())
     request = mp.MemeRequest("reaction b-roll for surprise: sensors everywhere", 1, 10, 10)
     seen_queries: list[str] = []
 
     def fake_get(url, headers=None, params=None, timeout=None):
-        seen_queries.append(params.get("q"))
-        if params.get("q") == "reaction":
-            body = {"data": [{"media": {"mp4": {"url": "https://cdn/yes.mp4"}}}]}
+        query = params.get("q")
+        seen_queries.append(query)
+        if query == "sensors everywhere":
+            body = {
+                "data": [
+                    {
+                        "title": "sensors everywhere explained",
+                        "media": {"mp4": {"url": "https://cdn/yes.mp4"}},
+                    }
+                ]
+            }
         else:
             body = {"data": []}
         return SimpleNamespace(status_code=200, text="", json=lambda: body)
@@ -1015,7 +1042,7 @@ def test_http_provider_falls_back_to_a_broader_query(tmp_path, monkeypatch):
 
     result = provider.generate(request, tmp_path)
     assert result is not None and result.read_bytes() == b"video"
-    assert seen_queries == ["surprise", "sensors everywhere", "reaction"]
+    assert seen_queries[0] == "sensors everywhere"
 
 
 def test_http_provider_searches_and_downloads_the_first_playable(tmp_path, monkeypatch):
@@ -1030,9 +1057,9 @@ def test_http_provider_searches_and_downloads_the_first_playable(tmp_path, monke
             text="",
             json=lambda: {
                 "data": [
-                    {"media": {"mp4": {"url": "https://cdn/bad.mp4"}}},
-                    {"media": {"mp4": {"url": "https://cdn/good.mp4"}}},
-                    {"media": {"mp4": {"url": "https://cdn/never.mp4"}}},
+                    {"title": "wow bad", "media": {"mp4": {"url": "https://cdn/bad.mp4"}}},
+                    {"title": "wow good", "media": {"mp4": {"url": "https://cdn/good.mp4"}}},
+                    {"title": "wow never", "media": {"mp4": {"url": "https://cdn/never.mp4"}}},
                 ]
             },
         )
@@ -1095,31 +1122,26 @@ def test_http_provider_auth_styles_and_template_query():
     assert "q" not in seen["params"]
 
 
-def test_http_provider_empty_and_bad_responses(tmp_path, monkeypatch):
+def test_http_provider_empty_or_unreachable_library(tmp_path, monkeypatch):
     provider = mp.HttpMemeProvider(search_settings())
+    request = mp.MemeRequest("reaction b-roll for shock: system broke", 1, 10, 10)
+
+    # An empty result list is not an error: the clip simply gets no cutaway.
     monkeypatch.setattr(
         mp.httpx,
         "get",
         lambda *a, **k: SimpleNamespace(status_code=200, json=lambda: {"data": []}, text=""),
     )
-    with pytest.raises(mp.MemeError, match="no results"):
-        provider.generate(mp.MemeRequest("p", 1, 10, 10), tmp_path)
+    assert provider.generate(request, tmp_path) is None
 
-    monkeypatch.setattr(
-        mp.httpx,
-        "get",
-        lambda *a, **k: SimpleNamespace(status_code=200, json=lambda: {"other": []}, text=""),
-    )
-    with pytest.raises(mp.MemeError, match="no result list"):
-        provider.generate(mp.MemeRequest("p", 1, 10, 10), tmp_path)
-
+    # An unreachable library is a real failure and should surface as one.
     monkeypatch.setattr(
         mp.httpx,
         "get",
         lambda *a, **k: SimpleNamespace(status_code=503, json=lambda: {}, text="down"),
     )
-    with pytest.raises(mp.MemeError, match="503"):
-        provider.generate(mp.MemeRequest("p", 1, 10, 10), tmp_path)
+    with pytest.raises(mp.MemeError, match="every query"):
+        provider.generate(request, tmp_path)
 
 
 def test_http_provider_cache_hit(tmp_path):

@@ -48,6 +48,7 @@ class AutopilotOptions:
     threshold: float = 3.0
     content_threshold: float = 2.5
     preset: str = "default"
+    caption_position: str = "auto"
     region: str = "US"
     platform: str = "tiktok"
     language: str = "auto"
@@ -217,6 +218,7 @@ def start_monitor(source: str, title: str, options: AutopilotOptions) -> str:
         spike_threshold=options.threshold,
         content_threshold=options.content_threshold,
         caption_preset=options.preset,
+        caption_position=options.caption_position,
         region=options.region,
         platform=options.platform,
         language=options.language,

@@ -11,8 +11,10 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-ReframeMode = Literal["auto", "center", "blur", "split"]
-CaptionPreset = Literal["default", "hormozi", "pill", "lime", "oneword", "cine", "clean"]
+ReframeMode = Literal["auto", "center", "blur", "split", "facecam"]
+CaptionPreset = Literal[
+    "default", "hormozi", "pill", "lime", "oneword", "bigword", "speed", "cine", "clean"
+]
 SourceKind = Literal["youtube", "twitch", "kick", "upload", "local", "live"]
 JobStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
 
@@ -82,11 +84,24 @@ class Highlight(BaseModel):
 
 
 class ProjectOptions(BaseModel):
-    clips: int = Field(default=5, ge=1, le=20)
+    # A long VOD can easily carry 150+ usable moments, so the cap is high; the
+    # ranker still only returns what the transcript actually supports.
+    clips: int = Field(default=5, ge=1, le=400)
     target_seconds: int = Field(default=55, ge=15, le=180)
+    # ``speed`` packages clips the way the reference Speed-edit channel does:
+    # "Speed <VERB> <OBJECT> in GTA 6 <EMOJI>" plus the discovery tag block.
+    title_style: Literal["plain", "speed"] = "plain"
     language: str = "auto"
     caption_preset: CaptionPreset = "default"
+    # Where the captions sit. ``auto`` lets the preset decide (``bigword`` is
+    # already middle); ``middle`` is the one-word-at-a-time Shorts look.
+    caption_position: Literal["auto", "bottom", "middle", "top"] = "auto"
     reframe_mode: ReframeMode = "auto"
+    # Split-screen geometry for the ``facecam`` layout: the webcam box as
+    # fractions of the source frame (x0, y0, x1, y1), and how much of the
+    # 1080x1920 canvas the face gets (the rest is gameplay).
+    facecam_box: tuple[float, float, float, float] = (0.0, 0.43, 0.205, 0.655)
+    facecam_ratio: float = Field(default=0.52, ge=0.30, le=0.70)
     captions: bool = True
     hook_titles: bool = True
     chat_overlay: bool = False
@@ -228,6 +243,7 @@ class MonitorOptions(BaseModel):
     hook_titles: bool = True
     chat_overlay: bool = True
     caption_preset: CaptionPreset = "default"
+    caption_position: Literal["auto", "bottom", "middle", "top"] = "auto"
     reframe_mode: ReframeMode = "auto"
     buffer_seconds: int = Field(default=420, ge=60, le=900)
     pre_roll: int = Field(default=25, ge=5, le=120)

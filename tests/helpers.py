@@ -109,5 +109,7 @@ class FixedTranscriber:
     def __init__(self, transcript: Transcript) -> None:
         self.transcript = transcript
 
-    def transcribe(self, audio: Path, language: str = "auto") -> Transcript:
+    def transcribe(
+        self, audio: Path, language: str = "auto", *, source_url: str | None = None
+    ) -> Transcript:
         return self.transcript.model_copy(deep=True)

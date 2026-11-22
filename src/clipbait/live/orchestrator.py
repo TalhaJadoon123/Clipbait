@@ -469,6 +469,7 @@ class LiveRunner:
                         "hook_titles": self.options.hook_titles,
                         "chat_overlay": self.options.chat_overlay,
                         "caption_preset": self.options.caption_preset,
+                        "caption_position": self.options.caption_position,
                         "reframe_mode": self.options.reframe_mode,
                         "language": self.options.language,
                         "hashtags": list(self.options.hashtags),

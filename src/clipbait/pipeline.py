@@ -177,7 +177,9 @@ def process_project(project_id: str, job_id: str | None = None) -> dict:
             f"Transcribing with {type(provider).__name__.replace('Transcriber', '').lower()}",
         )
         transcript = provider.transcribe(
-            audio, language="auto" if options.language == "auto" else options.language
+            audio,
+            language="auto" if options.language == "auto" else options.language,
+            source_url=project.get("source_url"),
         )
         transcript.duration = transcript.duration or info.duration
         storage.write_json(storage.transcript_path(project_id), transcript.model_dump())
@@ -250,6 +252,15 @@ def _create_clip(
 ) -> dict:
     packaging = analyze.packaging_for(highlight, meta)
     text = transcript.text_between(highlight.start, highlight.end) or highlight.hook
+    if options.title_style == "speed":
+        # Reference-channel packaging. Only overrides when the transcript gives
+        # a confident shape; otherwise the plain title stands.
+        from .analyze import packaging as speed_packaging
+
+        styled = speed_packaging.speed_title(text, highlight.keywords)
+        if styled:
+            packaging = {**packaging, "title": styled}
+        packaging = {**packaging, "hashtags": speed_packaging.speed_tags(highlight.keywords)}
     region = get_region(options.region)
     variants = (
         build_variants(
@@ -525,6 +536,8 @@ def render_clip_record(
         source_w=source_info.width,
         source_h=source_info.height,
         mode=clip.get("reframe_mode", "auto"),
+        facecam_box=options.facecam_box,
+        facecam_ratio=options.facecam_ratio,
     )
     words = transcript.words
     if offset:
@@ -556,6 +569,9 @@ def render_clip_record(
         plan,
         words=words,
         caption_preset=clip.get("caption_preset", "default"),
+        caption_position=None
+        if options.caption_position == "auto"
+        else options.caption_position,
         captions=bool(clip.get("captions", True)),
         hook=(clip.get("hook") or clip.get("title")) if clip.get("hook_titles", True) else None,
         chat=chat,
@@ -588,6 +604,13 @@ def render_clip_record(
             },
         },
     )
+    if link:
+        # The fetched window is only needed while encoding. Dropping it here is
+        # what keeps a long link-mode run (dozens of clips off one VOD) from
+        # filling the disk with footage that is already burned into the render.
+        window = storage.clip_window_path(clip["project_id"], clip_id)
+        if window.exists() and window.resolve() == Path(source).resolve():
+            window.unlink(missing_ok=True)
     return updated or clip
 
 

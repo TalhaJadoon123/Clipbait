@@ -331,6 +331,42 @@ def test_fetch_section_requests_only_the_window(tmp_path, remote_project, monkey
     assert target.read_bytes() == b"section-bytes"
 
 
+def test_fetch_section_prefers_seekable_hls(tmp_path, remote_project, monkeypatch):
+    # The DASH fallback downloads from byte 0 on a long VOD because ffmpeg
+    # cannot seek a fragmented mp4. Pin that the seekable HLS formats lead and
+    # that the native parallel downloader is used, while keeping a fallback for
+    # sources without HLS.
+    monkeypatch.setattr(downloader, "ensure_safe_url", lambda url: url)
+    argfile = tmp_path / "args.txt"
+    body = f"""#!/bin/sh
+printf '%s\\n' "$@" > {argfile}
+out=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-o" ]; then out="$arg"; fi
+  prev="$arg"
+done
+printf 'section-bytes' > "$out"
+exit 0
+"""
+    settings = dataclasses.replace(get_settings(), ytdlp=str(fake_ytdlp(tmp_path, body)))
+    monkeypatch.setattr(downloader, "get_settings", lambda: settings)
+
+    target = storage.clip_window_path(remote_project["id"], "clip_hls")
+    fetch_section("https://example.com/v", 12.0, 41.5, target)
+    args = argfile.read_text().splitlines()
+    fmt = args[args.index("-f") + 1]
+    assert "protocol^=m3u8" in fmt
+    assert "vcodec^=avc1" in fmt
+    assert "/b[height<=1080]/b" in fmt  # fallback for non-HLS sources
+    assert "--hls-prefer-native" in args
+    assert args[args.index("--concurrent-fragments") + 1] == "8"
+    # Forcing keyframes re-encodes and costs a second generation; the trim is
+    # already frame-accurate, so it must not be requested.
+    assert "--force-keyframes-at-cuts" not in args
+    assert args[args.index("--download-sections") + 1] == "*12.000-41.500"
+
+
 def test_fetch_section_reports_no_output(tmp_path, remote_project, monkeypatch):
     monkeypatch.setattr(downloader, "ensure_safe_url", lambda url: url)
     settings = dataclasses.replace(

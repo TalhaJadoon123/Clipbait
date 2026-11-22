@@ -311,6 +311,12 @@ def plan_clip(
 
     clipbait_platform = (item.platform or "tiktok").lower()
     requested = options.platforms or (clipbait_platform,)
+    if options.platforms:
+        # An explicit destination must also drive the caption/title limits and
+        # the platform-shaped fields; otherwise a clip whose own pick was, say,
+        # LinkedIn would be capped at 200 characters while posting to YouTube,
+        # which accepts 100.
+        clipbait_platform = options.platforms[0].lower()
     platforms = tuple(dict.fromkeys(upload_platform(name) for name in requested))
 
     language = options.language

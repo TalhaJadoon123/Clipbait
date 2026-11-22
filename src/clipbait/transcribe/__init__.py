@@ -13,6 +13,7 @@ built from them.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import random
 import re
@@ -25,6 +26,9 @@ import httpx
 from .. import media
 from ..config import Capabilities, Settings, detect_capabilities, get_settings
 from ..schema import Transcript, TranscriptSegment, Word
+from .subtitles import SubtitlesTranscriber, is_youtube
+
+log = logging.getLogger("clipbait.transcribe")
 
 
 class TranscriptionError(RuntimeError):
@@ -35,7 +39,9 @@ class Transcriber(ABC):
     name = "base"
 
     @abstractmethod
-    def transcribe(self, audio: Path, language: str = "auto") -> Transcript: ...
+    def transcribe(
+        self, audio: Path, language: str = "auto", *, source_url: str | None = None
+    ) -> Transcript: ...
 
 
 class MockTranscriber(Transcriber):
@@ -60,7 +66,9 @@ class MockTranscriber(Transcriber):
         "That is how you turn one recording into thirty days of content.",
     ]
 
-    def transcribe(self, audio: Path, language: str = "auto") -> Transcript:
+    def transcribe(
+        self, audio: Path, language: str = "auto", *, source_url: str | None = None
+    ) -> Transcript:
         duration = 60.0
         try:
             info = media.probe(audio)
@@ -144,7 +152,9 @@ class WhisperTranscriber(Transcriber):
             )
         return self._model
 
-    def transcribe(self, audio: Path, language: str = "auto") -> Transcript:
+    def transcribe(
+        self, audio: Path, language: str = "auto", *, source_url: str | None = None
+    ) -> Transcript:
         model = self._load()
         # Decode the pipeline's 16 kHz mono PCM WAV ourselves and hand Whisper
         # a float32 array. That keeps us off PyAV's container API, whose
@@ -199,7 +209,9 @@ class OpenAITranscriber(Transcriber):
             raise TranscriptionError("OPENAI_API_KEY is not set")
         self.settings = settings
 
-    def transcribe(self, audio: Path, language: str = "auto") -> Transcript:
+    def transcribe(
+        self, audio: Path, language: str = "auto", *, source_url: str | None = None
+    ) -> Transcript:
         data = {
             "model": "whisper-1",
             "response_format": "verbose_json",
@@ -248,7 +260,9 @@ class GeminiTranscriber(Transcriber):
             raise TranscriptionError("GEMINI_API_KEY is not set")
         self.settings = settings
 
-    def transcribe(self, audio: Path, language: str = "auto") -> Transcript:
+    def transcribe(
+        self, audio: Path, language: str = "auto", *, source_url: str | None = None
+    ) -> Transcript:
         # Gemini inline-data limit is 20MB; long audio must go through Whisper.
         if audio.stat().st_size > 19 * 1024 * 1024:
             raise TranscriptionError("audio too large for Gemini inline upload; use Whisper")
@@ -331,6 +345,8 @@ class AutoTranscriber(Transcriber):
                 self._delegate = GeminiTranscriber(self.settings)
             else:
                 self._delegate = MockTranscriber()
+        elif preference in {"subtitles", "youtube", "captions"}:
+            self._delegate = SubtitlesTranscriber(self.settings)
         elif preference == "whisper":
             self._delegate = WhisperTranscriber(self.settings)
         elif preference == "openai":
@@ -341,8 +357,25 @@ class AutoTranscriber(Transcriber):
             self._delegate = MockTranscriber()
         return self._delegate
 
-    def transcribe(self, audio: Path, language: str = "auto") -> Transcript:
-        return self.resolve().transcribe(audio, language)
+    def transcribe(
+        self, audio: Path, language: str = "auto", *, source_url: str | None = None
+    ) -> Transcript:
+        """Prefer the platform's own caption track for remote video.
+
+        It is word-accurate, costs seconds instead of hours, and only falls back
+        to speech-to-text when there is no caption track to fetch.
+        """
+        preferred = self.settings.transcriber in {"auto", "", "subtitles", "youtube", "captions"}
+        if preferred and is_youtube(source_url):
+            try:
+                return SubtitlesTranscriber(self.settings).transcribe(
+                    audio, language, source_url=source_url
+                )
+            except Exception as exc:  # noqa: BLE001 - any failure degrades to ASR
+                if self.settings.transcriber not in {"auto", ""}:
+                    raise
+                log.warning("captions unavailable (%s); falling back to speech-to-text", exc)
+        return self.resolve().transcribe(audio, language, source_url=source_url)
 
 
 def get_transcriber(settings: Settings | None = None) -> Transcriber:

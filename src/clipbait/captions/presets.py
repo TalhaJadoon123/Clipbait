@@ -31,6 +31,9 @@ class CaptionStyle:
     reveal: bool = False
     base_opacity: float = 0.72
     letter_spacing: float = 0.0
+    # Optional emphasis colours, cycled per caption line. The reference Speed
+    # edits alternate hot pink / yellow / cyan / lime on the active words.
+    palette: tuple[str, ...] = ()
 
 
 PRESETS: dict[str, CaptionStyle] = {
@@ -52,6 +55,24 @@ PRESETS: dict[str, CaptionStyle] = {
     "oneword": CaptionStyle(
         size=104, highlight="#C6FF3D", max_chars=1, max_words=1, max_duration=1.1,
         effect="pop", uppercase=True, margin_v=520, outline_width=4.0,
+    ),
+    # One word, dead centre, huge. The "middle of the screen, one word at a
+    # time" look: the eye never leaves the action and each word lands like a
+    # punch. Uppercase Anton, thick outline, lime active word.
+    "bigword": CaptionStyle(
+        size=124, highlight="#C6FF3D", max_chars=1, max_words=1, max_duration=1.0,
+        effect="pop", uppercase=True, position="middle", margin_v=0,
+        outline_width=5.0, base_opacity=0.9,
+    ),
+    # The reference Speed-edit look: short 3-4 word phrases dead centre, heavy
+    # black outline, and the active word cycling through hot pink / yellow /
+    # cyan / lime. Designed for the facecam split layout.
+    "speed": CaptionStyle(
+        size=86, color="#FFFFFF", highlight="#FFD400", outline_width=5.5,
+        max_chars=24, max_words=4, max_duration=2.0,
+        position="middle", margin_v=0, uppercase=True, bold=True,
+        effect="pop", base_opacity=1.0,
+        palette=("#FF3EA5", "#FFD400", "#25E6FF", "#5CFF5C"),
     ),
     "cine": CaptionStyle(
         font="Montserrat", size=54, color="#F5F1E8", highlight="#F5F1E8",
@@ -98,6 +119,8 @@ _DESCRIPTIONS = {
     "pill": "Violet pill behind the spoken word.",
     "lime": "Black text on a lime pill. Maximum scroll-stop.",
     "oneword": "One word at a time, huge. For high-energy cuts.",
+    "bigword": "One word, dead centre, huge. The scroll-stop look for Shorts.",
+    "speed": "Speed-edit look: centred phrases, rotating pink/yellow/cyan/lime emphasis.",
     "cine": "Editorial serif-free look, sentence case, soft shadow.",
     "clean": "No outline, no shouting. Documentaries and B2B.",
 }

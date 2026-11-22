@@ -130,7 +130,11 @@ def cmd_process(args: argparse.Namespace) -> int:
         clips=args.clips,
         target_seconds=args.target_seconds,
         caption_preset=args.preset,
+        caption_position=args.caption_position,
         reframe_mode=args.reframe,
+        facecam_box=_facecam_box(getattr(args, "facecam_box", None)),
+        facecam_ratio=getattr(args, "facecam_ratio", 0.52),
+        title_style=getattr(args, "title_style", "plain"),
         captions=not args.no_captions,
         hook_titles=not args.no_hooks,
         region=args.region,
@@ -258,6 +262,9 @@ def cmd_grab(args: argparse.Namespace) -> int:
         target_seconds=int(max(15, min(180, end - start))),
         caption_preset=args.preset,
         reframe_mode=args.reframe,
+        facecam_box=_facecam_box(getattr(args, "facecam_box", None)),
+        facecam_ratio=getattr(args, "facecam_ratio", 0.52),
+        title_style=getattr(args, "title_style", "plain"),
         captions=not args.no_captions,
         hook_titles=not args.no_hooks,
         meme_inserts=not getattr(args, "no_meme_inserts", False),
@@ -819,10 +826,28 @@ def _add_style_args(parser: argparse.ArgumentParser) -> None:
         help="music bed level under the speech (0-1, default 0.16)",
     )
     parser.add_argument(
+        "--caption-position",
+        default="auto",
+        choices=["auto", "bottom", "middle", "top"],
+        help="where captions sit; auto uses the preset (bigword is middle)",
+    )
+    parser.add_argument(
         "--no-meme-sfx",
         action="store_true",
         help="do not play a sound effect over each meme insert",
     )
+
+
+def _facecam_box(raw: str | None) -> tuple[float, float, float, float]:
+    """Parse ``x0,y0,x1,y1`` fractions; fall back to the stream default."""
+    default = (0.0, 0.43, 0.205, 0.655)
+    if not raw:
+        return default
+    try:
+        parts = tuple(float(part) for part in raw.split(","))
+    except ValueError:
+        return default
+    return parts if len(parts) == 4 else default
 
 
 def _style_kwargs(args: argparse.Namespace) -> dict:
@@ -831,6 +856,7 @@ def _style_kwargs(args: argparse.Namespace) -> dict:
         "music": getattr(args, "music", None),
         "music_volume": getattr(args, "music_volume", 0.16),
         "meme_sfx": not getattr(args, "no_meme_sfx", False),
+        "caption_position": getattr(args, "caption_position", "auto"),
     }
 
 
@@ -854,7 +880,31 @@ def build_parser() -> argparse.ArgumentParser:
     process.add_argument("--clips", type=int, default=5)
     process.add_argument("--target-seconds", type=int, default=55)
     process.add_argument("--preset", default="default")
-    process.add_argument("--reframe", default="auto", choices=["auto", "center", "blur", "split"])
+    process.add_argument(
+        "--caption-position",
+        default="auto",
+        choices=["auto", "bottom", "middle", "top"],
+        help="where captions sit; auto uses the preset (bigword is middle)",
+    )
+    process.add_argument(
+        "--reframe",
+        default="auto",
+        choices=["auto", "center", "blur", "split", "facecam"],
+        help="facecam = Speed-style split screen (webcam top, game bottom)",
+    )
+    process.add_argument(
+        "--facecam-box",
+        help="webcam box as fractions x0,y0,x1,y1 (default 0,0.43,0.205,0.655)",
+    )
+    process.add_argument(
+        "--facecam-ratio", type=float, default=0.52, help="facecam share of the frame (0.30-0.70)"
+    )
+    process.add_argument(
+        "--title-style",
+        default="plain",
+        choices=["plain", "speed"],
+        help="speed = 'Speed <VERB> <OBJECT> in GTA 6 <EMOJI>' packaging",
+    )
     process.add_argument("--region", default="US", help="market profile, e.g. US, IN, BR, PK")
     process.add_argument(
         "--platform", default="tiktok", choices=["tiktok", "reels", "shorts", "linkedin", "x"]
@@ -879,7 +929,12 @@ def build_parser() -> argparse.ArgumentParser:
     grab.add_argument("--title", help="hook for the clip; derived from speech when omitted")
     grab.add_argument("--reason", help="why it is worth posting, stored with the clip")
     grab.add_argument("--preset", default="default")
-    grab.add_argument("--reframe", default="auto", choices=["auto", "center", "blur", "split"])
+    grab.add_argument("--reframe", default="auto", choices=["auto", "center", "blur", "split", "facecam"])
+    grab.add_argument(
+        "--facecam-box", help="webcam box as fractions x0,y0,x1,y1 (default 0,0.43,0.205,0.655)"
+    )
+    grab.add_argument("--facecam-ratio", type=float, default=0.52)
+    grab.add_argument("--title-style", default="plain", choices=["plain", "speed"])
     grab.add_argument("--language", default="auto", help="speech language, e.g. en")
     grab.add_argument(
         "--hashtags",

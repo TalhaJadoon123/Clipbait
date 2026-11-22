@@ -46,6 +46,15 @@ _QUERY_STOPWORDS = {
     "but", "was", "were", "are", "its", "his", "her", "they", "them", "have",
     "has", "had", "not", "what", "when", "how", "who", "why", "all", "just",
     "can", "will", "would", "could", "should", "into", "about", "there", "here",
+    # Filler and light verbs: as meme *queries* they match everything and so
+    # select nothing. Dropping them keeps a search pointed at the subject.
+    "gonna", "wanna", "gotta", "like", "really", "literally", "actually",
+    "okay", "yeah", "yep", "yall", "bro", "dude", "ohh", "uhh", "hmm",
+    "going", "come", "came", "get", "got", "make", "made", "take",
+    "took", "know", "think", "look", "looks", "said", "say", "says", "see",
+    "seen", "well", "right", "thing", "things", "stuff", "guy", "guys",
+    "people", "back", "little", "big", "one", "two", "some", "very", "much",
+    "more", "most", "even", "still", "down", "out", "off", "over", "again",
 }
 
 
@@ -59,8 +68,72 @@ def _query_words(text: str) -> list[str]:
     ]
 
 
+def _words_any(text: str) -> list[str]:
+    """Tokens for relevance matching.
+
+    Like :func:`_query_words` but hyphens and apostrophes also split, so a
+    library slug (``grand-theft-auto-vice-city``) contributes its real words
+    instead of arriving as one un-matchable token.
+    """
+    return _query_words(text.replace("-", " ").replace("'", " "))
+
+
+def _stem(word: str) -> str:
+    """A deliberately crude stem.
+
+    It only has to widen matching enough that "surprise" meets "surprised" and
+    "dogs" meets "dog". A wrong merge is caught by the fail-closed gate, so no
+    real stemming library is warranted here.
+    """
+    for suffix in ("ing", "ers", "er", "ed", "es", "s", "ly"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            return word[: -len(suffix)]
+    return word
+
+
+def _same_word(a: str, b: str) -> bool:
+    left, right = _stem(a.lower()), _stem(b.lower())
+    if left == right:
+        return True
+    if len(left) >= 4 and len(right) >= 4:
+        return left.startswith(right) or right.startswith(left)
+    return False
+
+
+def _overlap(query_words: list[str], hay_words: list[str]) -> float:
+    """Fraction of the query's distinct words present in the haystack."""
+    wanted = set(query_words)
+    if not wanted:
+        return 0.0
+    present = set(hay_words)
+    if not present:
+        return 0.0
+    hits = sum(1 for word in wanted if any(_same_word(word, other) for other in present))
+    return hits / len(wanted)
+
+
 class MemeError(RuntimeError):
     pass
+
+
+# A library result only earns a place in a clip when at least this fraction of
+# the query's words appear in the result's own title/tags/slug. Below it, the
+# result is treated as noise: an off-topic or generic meme is worse than none.
+MIN_MEME_RELEVANCE = 0.5
+
+
+@dataclass(frozen=True)
+class _Hit:
+    """One library result: the video URL plus the words that describe it."""
+
+    url: str
+    title: str = ""
+    slug: str = ""
+    tags: tuple[str, ...] = ()
+
+    def words(self) -> list[str]:
+        text = " ".join(part for part in (self.title, self.slug, self.url, *self.tags) if part)
+        return _words_any(text)
 
 
 @dataclass(frozen=True)
@@ -274,6 +347,12 @@ class HttpMemeProvider:
     breach skips to the next candidate. Queries are tried in order too (see
     :meth:`queries_for`), so a clip only ends up with no insert when the library
     is unreachable, not because one query happened to return nothing.
+
+    The one thing this provider will *not* do is insert a meme that has nothing
+    to do with the moment. Keyword search happily returns generic results for
+    any term, so each candidate's own words are checked against the query and
+    anything off-topic is discarded (see :data:`MIN_MEME_RELEVANCE`). A clip
+    with no cutaway is better than a clip with a lame one.
     """
 
     name = "search"
@@ -292,14 +371,14 @@ class HttpMemeProvider:
         """Ordered library searches, most topical first.
 
         Insert prompts look like
-        ``reaction b-roll for surprise, awe: <spoken words>``. A single signal
-        word ("surprise") is the best query: it names the moment's emotion and a
-        meme library always answers it. Two spoken words follow as a topical
-        long shot, then a broad "reaction" that cannot miss.
+        ``reaction b-roll for <signals>: <spoken words>``. The spoken words are
+        the *subject* of the moment, so they are searched first, joined as a
+        phrase; the emotion word ("surprise") is only a fallback.
 
-        Every query stays short on purpose. Long queries over-constrain the
-        search and return nothing -- six words joined together ("surprise awe
-        story peak just now") is why inserts silently disappeared from clips.
+        There is deliberately no broad catch-all query. A generic "reaction"
+        search answers with a random, unfunny GIF, which is exactly the lame
+        insert this provider is built to avoid: when nothing topical can be
+        found, :meth:`generate` inserts nothing.
         """
         head, _, tail = request.prompt.partition(":")
         signals = _query_words(head.replace("reaction b-roll", " "))
@@ -307,19 +386,23 @@ class HttpMemeProvider:
 
         ordered: list[str] = []
         seen: set[str] = set()
-        for query in (
-            signals[0] if signals else "",
-            " ".join(content[:2]),
-            "reaction",
-        ):
+
+        def add(words: list[str]) -> None:
+            query = " ".join(words)
             if query and query not in seen:
                 seen.add(query)
                 ordered.append(query)
+
+        add(content[:2])
+        add(content[:1])
+        add(content[:1] + signals[:1])
+        add(signals[:1])
         return ordered
 
     def query_for(self, request: MemeRequest) -> str:
         """The single best search query -- the head of :meth:`queries_for`."""
-        return self.queries_for(request)[0]
+        queries = self.queries_for(request)
+        return queries[0] if queries else ""
 
     def generate(self, request: MemeRequest, dest_dir: Path) -> Path | None:
         if not self.url:
@@ -328,33 +411,77 @@ class HttpMemeProvider:
         if target.exists() and target.stat().st_size > 0:
             return target
 
-        # Walk the queries most-topical first and stop at the first playable
-        # asset. An empty search is not a failure on its own -- a later, broader
-        # query still gets the clip its cutaway.
-        last_error: MemeError | None = None
-        saw_candidate = False
-        for query in self.queries_for(request):
+        queries = self.queries_for(request)
+        if not queries:
+            # Nothing topical to search for: stay silent rather than reach for a
+            # generic meme.
+            log.debug("no topical meme query for %r", request.prompt)
+            return None
+
+        content = self._content_words(request)
+        # Collect the on-topic results across every query, then take the best.
+        # Ranking beats "first query wins": a weak first query cannot hide a
+        # strong hit found by the next one, and vice versa.
+        scored: dict[str, tuple[float, int, _Hit]] = {}
+        failed = 0
+        for query in queries:
             try:
-                candidates = self._search(query)
+                hits = self._search_hits(query)
             except MemeError as exc:
-                last_error = exc
+                failed += 1
+                log.debug("meme search %r failed: %s", query, exc)
                 continue
-            saw_candidate = saw_candidate or bool(candidates)
-            for url in candidates:
-                try:
-                    _download_stream(url, target)
-                except (httpx.HTTPError, MemeError, OSError) as exc:
-                    log.debug("meme candidate skipped (%s): %s", url, exc)
+            for hit in hits:
+                score = self._relevance(query, hit, content)
+                if score <= 0.0:
                     continue
-                if target.exists() and target.stat().st_size > 0:
-                    return target
-        if last_error is not None:
-            raise last_error
-        if not saw_candidate:
-            raise MemeError("meme search returned no results")
-        raise MemeError("meme search returned no playable video")
+                previous = scored.get(hit.url)
+                rank = (score, len(_query_words(query)))
+                if previous is None or rank > (previous[0], previous[1]):
+                    scored[hit.url] = (score, len(_query_words(query)), hit)
+
+        if not scored:
+            if failed == len(queries):
+                # The library is unreachable: surface that, it is a real error.
+                raise MemeError("meme search failed for every query")
+            log.debug("no relevant meme for %r; skipping insert", request.prompt)
+            return None
+
+        # Most specific and best-matching first.
+        ranked = sorted(
+            scored.values(), key=lambda item: (-item[0], -item[1], item[2].url)
+        )
+        for _, _, hit in ranked:
+            try:
+                _download_stream(hit.url, target)
+            except (httpx.HTTPError, MemeError, OSError) as exc:
+                log.debug("meme candidate skipped (%s): %s", hit.url, exc)
+                continue
+            if target.exists() and target.stat().st_size > 0:
+                return target
+        log.debug("meme search found no playable on-topic video for %r", request.prompt)
+        return None
 
     # ---------------------------------------------------------------- helpers
+
+    def _content_words(self, request: MemeRequest) -> list[str]:
+        """The spoken subject words in an insert prompt (after the colon)."""
+        _, _, tail = request.prompt.partition(":")
+        return _query_words(tail)
+
+    def _relevance(self, query: str, hit: _Hit, content: list[str]) -> float:
+        """How well a library result matches the moment, ``0`` meaning "no".
+
+        A result must first share words with the query that found it (the
+        fail-closed gate). A bonus is then added for also speaking to the actual
+        spoken words, so when two queries both land, the one about the subject
+        wins over the one about the emotion.
+        """
+        base = _overlap(_query_words(query), hit.words())
+        if base < MIN_MEME_RELEVANCE:
+            return 0.0
+        bonus = _overlap(content, hit.words()) if content else 0.0
+        return base + 0.5 * bonus
 
     def _headers(self) -> dict[str, str]:
         headers = {"accept": "application/json"}
@@ -381,6 +508,10 @@ class HttpMemeProvider:
         return params
 
     def _search(self, query: str) -> list[str]:
+        """The candidate video URLs for a query, in library order."""
+        return [hit.url for hit in self._search_hits(query)]
+
+    def _search_hits(self, query: str) -> list[_Hit]:
         url = self.url or ""
         headers = self._headers()
         params = self._params(query)
@@ -411,7 +542,8 @@ class HttpMemeProvider:
         if not isinstance(results, list):
             raise MemeError("meme search response had no result list")
 
-        found: list[str] = []
+        found: list[_Hit] = []
+        seen: set[str] = set()
         paths = self._video_paths()
         for item in results:
             value: str | None = None
@@ -427,15 +559,34 @@ class HttpMemeProvider:
                 if isinstance(candidate, str) and candidate.startswith(("http://", "https://")):
                     value = candidate
                     break
-            if value and value not in found:
-                found.append(value)
-            elif not value and not found:
+            if not value:
                 # Fall back to any URL in the result, so a slightly different
                 # provider shape still contributes a candidate.
-                fallback = _find_url(item)
-                if fallback:
-                    found.append(fallback)
+                value = _find_url(item)
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            found.append(
+                _Hit(
+                    url=value,
+                    title=self._string_for(item, self.settings.meme_search_title),
+                    slug=self._string_for(item, self.settings.meme_search_slug),
+                    tags=self._tags_for(item),
+                )
+            )
         return found[: max(1, self.settings.meme_search_limit)]
+
+    def _string_for(self, item: object, path: str) -> str:
+        value = _dot_get(item, path) if path else None
+        return value if isinstance(value, str) else ""
+
+    def _tags_for(self, item: object) -> tuple[str, ...]:
+        value = _dot_get(item, self.settings.meme_search_tags or "")
+        if isinstance(value, str):
+            return tuple(value.split(","))
+        if isinstance(value, list):
+            return tuple(tag for tag in value if isinstance(tag, str))
+        return ()
 
     def _video_paths(self) -> list[str]:
         """The candidate video dot-paths, in preference order.
@@ -506,12 +657,13 @@ def get_meme_provider(settings: Settings | None = None) -> MemeProvider | None:
     """Pick a provider: search library, generated API, local fixture, or nothing.
 
     ``CLIPBAIT_MEME_PROVIDER`` may force ``search``, ``api``, ``fixture`` or
-    ``none``. With ``auto`` a configured search library wins (it returns real
-    memes and needs no generation wait), then a generation API, then the local
-    fixture so the feature works out of the box.
+    ``none``. The default is ``none``: stock reaction GIFs read as childish next
+    to real footage, and a generic insert is worse than no insert. A search
+    library must be opted into explicitly, and it must still pass the relevance
+    gate in this module before anything is downloaded.
     """
     settings = settings or get_settings()
-    preference = (settings.meme_provider or "auto").lower()
+    preference = (settings.meme_provider or "none").lower()
     if preference == "none":
         return None
     if preference == "search":

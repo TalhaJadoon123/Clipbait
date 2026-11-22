@@ -148,3 +148,40 @@ def test_empty_word_list_still_writes_a_header(tmp_path: Path) -> None:
     text = target.read_text(encoding="utf-8")
     assert "[Script Info]" in text
     assert "Dialogue:" not in text
+
+def test_speed_preset_cycles_emphasis_colours() -> None:
+    from clipbait.captions.ass import build_captions
+    from clipbait.schema import Word
+
+    words = [
+        Word(text=text, start=index * 0.5, end=index * 0.5 + 0.45, prob=1.0)
+        for index, text in enumerate("he just flew into vice city".split())
+    ]
+    doc = build_captions(words, 0.0, 4.0, "speed")
+    # Centre alignment (5) and at least two distinct palette colours in play.
+    assert ",5," in doc
+    colors = {line.split(r"\c")[1][:9] for line in doc.splitlines() if r"\c&H" in line}
+    assert len(colors) >= 2
+
+
+def test_noise_tokens_never_reach_burned_captions() -> None:
+    # A transcript cached before the ingestion filter landed still has YouTube's
+    # "[ __ ]"/"[Music]"/"♪" stage cues; build_captions must drop them so they
+    # are never drawn on screen.
+    from clipbait.text import is_caption_noise
+
+    for noisy in ("[\u00a0__\u00a0]", "[Music]", "[laughter]", "\u266a", "...", "__"):
+        assert is_caption_noise(noisy)
+    for spoken in ("real", "GTA", "don't", "100%"):
+        assert not is_caption_noise(spoken)
+
+    words = [
+        Word(text="[\u00a0__\u00a0]", start=0.0, end=0.4),
+        Word(text="real", start=0.4, end=0.9),
+        Word(text="\u266a", start=0.9, end=1.3),
+    ]
+    doc = build_captions(words, 0.0, 2.0, "speed")
+    assert "__" not in doc
+    assert "\u266a" not in doc
+    assert "real" in doc.lower()
+    assert len([line for line in doc.splitlines() if line.startswith("Dialogue:")]) == 1

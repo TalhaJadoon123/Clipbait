@@ -18,10 +18,18 @@ from .tracker import FaceSample, sample_faces, split_positions, two_speaker_posi
 OUT_W = 1080
 OUT_H = 1920
 
+# Where Speed's webcam box sits in a typical stream: bottom-left, next to the
+# chat panel. Fractions of the source frame (x0, y0, x1, y1). The split-screen
+# layout crops this for the top half; the game is cropped for the bottom half.
+FACE_CAM_BOX = (0.0, 0.43, 0.205, 0.655)
+# Share of the 1080x1920 canvas given to the facecam. The reference edits put
+# the face a little above half so the seam caption sits at the eye line.
+FACE_CAM_RATIO = 0.52
+
 
 @dataclass(frozen=True)
 class ReframePlan:
-    mode: str  # track | center | blur | split
+    mode: str  # track | center | blur | split | facecam
     out_w: int
     out_h: int
     source_w: int
@@ -29,8 +37,11 @@ class ReframePlan:
     crop_xs: list[int]  # one value per output frame
     fps: float
     split: tuple[float, float] | None = None
+    facecam_box: tuple[float, float, float, float] | None = None
+    facecam_ratio: float = FACE_CAM_RATIO
     note: str = ""
     sendcmd_path: str | None = None
+
 
     def with_sendcmd(self, path: Path) -> ReframePlan:
         self.write_sendcmd(path)
@@ -145,6 +156,8 @@ def plan_reframe(
     out_w: int = OUT_W,
     out_h: int = OUT_H,
     fps: float = 30.0,
+    facecam_box: tuple[float, float, float, float] | None = None,
+    facecam_ratio: float = FACE_CAM_RATIO,
 ) -> ReframePlan:
     """Decide the layout and, for tracking modes, the per-frame crop x."""
     duration = max(0.1, end - start)
@@ -155,6 +168,25 @@ def plan_reframe(
     scaled_w = int(round(source_w * scale))
     crop_w = min(scaled_w, out_w)
     max_x = max(0, scaled_w - crop_w)
+
+    if mode == "facecam":
+        # Split-screen: facecam on top, gameplay on the bottom. The game crop is
+        # static and biased right so it never frames the webcam overlay (which
+        # is bottom-left) or the chat beside it. This is the look of the
+        # reference Speed edits; tracking the game would chase faces in the
+        # webcam box and re-introduce it.
+        return ReframePlan(
+            mode="facecam",
+            out_w=out_w,
+            out_h=out_h,
+            source_w=source_w,
+            source_h=source_h,
+            crop_xs=[int(round(max_x * 0.55))],
+            fps=fps,
+            facecam_box=facecam_box or FACE_CAM_BOX,
+            facecam_ratio=_clamp(facecam_ratio, 0.30, 0.70),
+            note="facecam over gameplay",
+        )
 
     resolved = mode
     if mode == "auto":

@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass
 
 from ..schema import ChatMessage, Word
+from ..text import is_caption_noise
 from .presets import POSITIONS, CaptionStyle, get_preset
 
 ASS_HEADER = """[Script Info]
@@ -94,7 +95,13 @@ def build_groups(
     style: CaptionStyle,
 ) -> list[CaptionGroup]:
     """Group words into caption blocks on punctuation, silence and budget."""
-    usable = [w for w in words if w.end > start and w.start < end]
+    # Drop stage directions and bare symbols here too: a transcript cached
+    # before the ingestion filter landed must still render clean captions.
+    usable = [
+        w
+        for w in words
+        if w.end > start and w.start < end and not is_caption_noise(w.text)
+    ]
     if not usable:
         return []
     groups: list[CaptionGroup] = []
@@ -204,11 +211,15 @@ def build_captions(
 
     base = ass_color(_dim(style.color, style.base_opacity))
     highlight = ass_color(style.highlight)
+    palette = [ass_color(colour) for colour in style.palette]
     dim = ass_color(_dim(style.color, max(0.25, style.base_opacity - 0.2)))
     events: list[str] = []
 
     groups = build_groups(words, start, end, style)
-    for group in groups:
+    for group_index, group in enumerate(groups):
+        # Rotate the emphasis colour line by line, the way the reference edits
+        # do; fall back to the single highlight when no palette is set.
+        group_highlight = palette[group_index % len(palette)] if palette else highlight
         for index, word in enumerate(group.words):
             event_start = max(0.0, word.start - start)
             if index + 1 < len(group.words):
@@ -219,7 +230,7 @@ def build_captions(
                 group,
                 index,
                 style,
-                highlight=highlight,
+                highlight=group_highlight,
                 base=base,
                 dim=dim,
                 reveal=style.reveal,

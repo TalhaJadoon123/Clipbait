@@ -17,7 +17,7 @@ from pathlib import Path
 from .. import media
 from ..captions import write_ass
 from ..config import get_settings
-from ..reframe import ReframePlan
+from ..reframe import FACE_CAM_BOX, FACE_CAM_RATIO, ReframePlan
 from ..schema import ChatMessage, Word
 
 log = logging.getLogger("clipbait.render")
@@ -37,6 +37,10 @@ class RenderResult:
 
 def _even(value: int) -> int:
     return value + (value % 2)
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
 
 
 def _esc(path: Path) -> str:
@@ -145,7 +149,36 @@ def _graph(
         f"scale={scaled_w}:{out_h}:flags=lanczos,setsar=1"
     )
 
-    if plan.mode in {"track", "center"}:
+    if plan.mode == "facecam":
+        # Split-screen: the webcam box on top, a clean wide gameplay crop on the
+        # bottom. Both come from the same scaled frame, so they stay in sync.
+        ratio = _clamp(plan.facecam_ratio or FACE_CAM_RATIO, 0.30, 0.70)
+        top_h = max(2, min(out_h - 2, _even(int(round(out_h * ratio)))))
+        bot_h = out_h - top_h
+        fx0, fy0, fx1, fy1 = plan.facecam_box or FACE_CAM_BOX
+        fx0, fx1 = sorted((_clamp(fx0, 0.0, 1.0), _clamp(fx1, 0.0, 1.0)))
+        fy0, fy1 = sorted((_clamp(fy0, 0.0, 1.0), _clamp(fy1, 0.0, 1.0)))
+        fcw = max(2, _even(int(round((fx1 - fx0) * scaled_w))))
+        fch = max(2, _even(int(round((fy1 - fy0) * out_h))))
+        fcx = max(0, min(int(round(fx0 * scaled_w)), scaled_w - fcw))
+        fcy = max(0, min(int(round(fy0 * out_h)), out_h - fch))
+        # The game is cropped from the strip right of the webcam+chat block
+        # (about the left 40% of the source) and vertically trimmed so the
+        # stream's own viewer counter and subtitle bar never show through.
+        bot_x = max(0, min(int(round(scaled_w * 0.40)), scaled_w - 2))
+        bot_w = max(2, _even(scaled_w - bot_x))
+        bot_crop_h = min(out_h, max(2, _even(int(round(bot_w * bot_h / out_w)))))
+        bot_y = int(round((out_h - bot_crop_h) / 2))
+        chain = (
+            f"{base},split=2[fc0][gp0];"
+            f"[fc0]crop={fcw}:{fch}:{fcx}:{fcy},"
+            f"scale={out_w}:{top_h}:force_original_aspect_ratio=increase,"
+            f"crop={out_w}:{top_h},setsar=1[top];"
+            f"[gp0]crop={bot_w}:{bot_crop_h}:x={bot_x}:y={bot_y},"
+            f"scale={out_w}:{bot_h}:flags=lanczos,setsar=1[bot];"
+            f"[top][bot]vstack=inputs=2,setsar=1[layout]"
+        )
+    elif plan.mode in {"track", "center"}:
         if crop_w < out_w:
             chain = (
                 f"{base},crop={crop_w}:{out_h}:x=0:y=0,"
@@ -229,6 +262,7 @@ def render_clip(
     *,
     words: list[Word] | None = None,
     caption_preset: str = "default",
+    caption_position: str | None = None,
     captions: bool = True,
     hook: str | None = None,
     chat: list[ChatMessage] | None = None,
@@ -263,7 +297,7 @@ def render_clip(
     ass_path: Path | None = None
     if captions and words:
         ass_path = out_path.with_suffix(".ass")
-        write_ass(ass_path, words, start, end, caption_preset, hook=hook, chat=chat)
+        write_ass(ass_path, words, start, end, caption_preset, hook=hook, chat=chat, position=caption_position)
 
     info = media.probe(source)
     if plan.mode == "track":

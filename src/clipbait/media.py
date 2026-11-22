@@ -122,10 +122,15 @@ def extract_audio(source: Path, target: Path, *, sample_rate: int = 16000) -> Pa
 
 
 def audio_rms(path: Path, window: float = 0.5) -> list[tuple[float, float]]:
-    """Return [(seconds, rms 0..1)] using only the stdlib.
+    """Return [(seconds, rms 0..1)].
 
     Used by the no-LLM ranker to detect laughter, shouting and applause. Reads
     16-bit mono PCM produced by :func:`extract_audio`; anything else returns [].
+
+    numpy is optional (it ships with the vision/dev extras, not core), so it is
+    used when present and the pure-stdlib loop is kept as the fallback. On a
+    six-hour VOD the vectorised path turns minutes of Python-level summing into
+    a couple of seconds, which matters before a 200-clip batch.
     """
     try:
         with wave.open(str(path), "rb") as handle:
@@ -133,29 +138,77 @@ def audio_rms(path: Path, window: float = 0.5) -> list[tuple[float, float]]:
                 return []
             rate = handle.getframerate()
             frames_per_window = max(1, int(rate * window))
-            samples_per_read = frames_per_window * 2
-            out: list[tuple[float, float]] = []
-            index = 0
-            while True:
-                raw = handle.readframes(frames_per_window)
-                if not raw:
-                    break
-                # Fast absolute-mean proxy for RMS; 4x cheaper in pure Python.
-                total = 0
-                count = 0
-                for offset in range(0, len(raw) - 1, 2):
-                    value = raw[offset] | (raw[offset + 1] << 8)
-                    if value >= 32768:
-                        value -= 65536
-                    total += abs(value)
-                    count += 1
-                out.append((index * window, min(1.0, (total / max(1, count)) / 32768.0 * 3.0)))
-                index += 1
-                if len(raw) < samples_per_read // 2:
-                    break
-            return out
+            try:
+                import numpy as np  # type: ignore[import-not-found]
+            except ImportError:  # pragma: no cover - core install has no numpy
+                return _audio_rms_stdlib(handle, frames_per_window, window)
+            return _audio_rms_numpy(handle, np, frames_per_window, window)
     except (OSError, wave.Error):
         return []
+
+
+def _audio_rms_stdlib(
+    handle: wave.Wave_read, frames_per_window: int, window: float
+) -> list[tuple[float, float]]:
+    """Dependency-free fallback: absolute mean per window, in plain Python."""
+    samples_per_read = frames_per_window * 2
+    out: list[tuple[float, float]] = []
+    index = 0
+    while True:
+        raw = handle.readframes(frames_per_window)
+        if not raw:
+            break
+        # Fast absolute-mean proxy for RMS; 4x cheaper in pure Python.
+        total = 0
+        count = 0
+        for offset in range(0, len(raw) - 1, 2):
+            value = raw[offset] | (raw[offset + 1] << 8)
+            if value >= 32768:
+                value -= 65536
+            total += abs(value)
+            count += 1
+        out.append((index * window, min(1.0, (total / max(1, count)) / 32768.0 * 3.0)))
+        index += 1
+        if len(raw) < samples_per_read // 2:
+            break
+    return out
+
+
+def _audio_rms_numpy(
+    handle: wave.Wave_read, np, frames_per_window: int, window: float
+) -> list[tuple[float, float]]:
+    """Same values as :func:`_audio_rms_stdlib`, computed a block at a time.
+
+    Blocks are a few hundred windows so peak memory stays small even for a
+    multi-hour 16 kHz mono WAV, and the trailing partial window is handled
+    separately so the output length matches the stdlib path exactly.
+    """
+    out: list[tuple[float, float]] = []
+    index = 0
+    block_frames = frames_per_window * 512
+    while True:
+        raw = handle.readframes(block_frames)
+        if not raw:
+            break
+        values = np.frombuffer(raw, dtype="<i2")
+        full = (values.size // frames_per_window) * frames_per_window
+        if full:
+            # Widen before abs: -32768 overflows back to itself in int16.
+            matrix = np.abs(values[:full].astype(np.int32)).reshape(-1, frames_per_window)
+            means = matrix.mean(axis=1, dtype=np.float64) / 32768.0 * 3.0
+            out.extend(
+                ((index + i) * window, float(value))
+                for i, value in enumerate(np.minimum(1.0, means))
+            )
+            index += matrix.shape[0]
+        tail = values[full:]
+        if tail.size:
+            mean = float(np.abs(tail.astype(np.int32)).mean()) / 32768.0 * 3.0
+            out.append((index * window, min(1.0, mean)))
+            index += 1
+        if len(raw) < block_frames * 2:
+            break
+    return out
 
 
 def thumbnail(video: Path, at: float, target: Path, width: int = 540) -> Path | None:

@@ -65,7 +65,7 @@ class Settings:
     ollama_model: str = "qwen2.5:14b"
     # Meme video inserts. ``auto`` uses the hosted API when one is configured and
     # falls back to a locally rendered placeholder otherwise.
-    meme_provider: str = "auto"
+    meme_provider: str = "none"
     meme_api_url: str | None = None
     meme_api_key: str | None = None
     meme_model: str = ""
@@ -80,6 +80,13 @@ class Settings:
     meme_search_query_param: str = "q"
     meme_search_results: str = "results"  # dot path to the result list
     meme_search_video: str = "url"  # dot path to a video URL in each result
+    # Where a result's descriptive words live. These feed the relevance gate
+    # that keeps an off-topic meme out of a clip: the words a library attaches to
+    # a result (its title, tags, slug) are checked against the query, and a
+    # result that shares nothing is discarded rather than inserted.
+    meme_search_title: str = "title"
+    meme_search_tags: str = "tags"
+    meme_search_slug: str = "slug"
     meme_search_limit: int = 8
     meme_search_rating: str = ""  # e.g. "pg-13" for Giphy
     # Music bed and insert sound effects. Both are plain folders of audio files
@@ -171,7 +178,7 @@ def get_settings() -> Settings:
         anthropic_model=_env("CLIPBAIT_ANTHROPIC_MODEL", "claude-sonnet-4-2") or "claude-sonnet-4-2",
         gemini_model=_env("CLIPBAIT_GEMINI_MODEL", "gemini-2.5-flash") or "gemini-2.5-flash",
         ollama_model=_env("CLIPBAIT_OLLAMA_MODEL", "qwen2.5:14b") or "qwen2.5:14b",
-        meme_provider=_env("CLIPBAIT_MEME_PROVIDER", "auto") or "auto",
+        meme_provider=_env("CLIPBAIT_MEME_PROVIDER", "none") or "none",
         meme_api_url=_env("CLIPBAIT_MEME_API_URL"),
         meme_api_key=_env("CLIPBAIT_MEME_API_KEY"),
         meme_model=_env("CLIPBAIT_MEME_MODEL", "") or "",
@@ -184,6 +191,9 @@ def get_settings() -> Settings:
         meme_search_query_param=_env("CLIPBAIT_MEME_SEARCH_QUERY_PARAM", "q") or "q",
         meme_search_results=_env("CLIPBAIT_MEME_SEARCH_RESULTS", "results") or "results",
         meme_search_video=_env("CLIPBAIT_MEME_SEARCH_VIDEO", "url") or "url",
+        meme_search_title=_env("CLIPBAIT_MEME_SEARCH_TITLE", "title") or "title",
+        meme_search_tags=_env("CLIPBAIT_MEME_SEARCH_TAGS", "tags") or "tags",
+        meme_search_slug=_env("CLIPBAIT_MEME_SEARCH_SLUG", "slug") or "slug",
         meme_search_limit=max(1, _env_int("CLIPBAIT_MEME_SEARCH_LIMIT", 8)),
         meme_search_rating=_env("CLIPBAIT_MEME_SEARCH_RATING", "") or "",
         music_dir=_env("CLIPBAIT_MUSIC_DIR"),
