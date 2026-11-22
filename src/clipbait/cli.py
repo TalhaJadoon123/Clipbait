@@ -425,6 +425,51 @@ def cmd_check_template(args: argparse.Namespace) -> int:
     return 0
 
 
+# -------------------------------------------------------------------- cleanup
+
+
+def cmd_cleanup(args: argparse.Namespace) -> int:
+    from . import retention
+
+    settings = get_settings()
+    settings.ensure_dirs()
+    db.init_db()
+
+    settle = max(0.0, args.older_than) * 3600
+    targets = retention.plan(settle_seconds=settle)
+    total = sum(target.bytes for target in targets)
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "targets": [target.as_dict() for target in targets],
+                    "bytes": total,
+                    "applied": bool(args.apply),
+                },
+                indent=2,
+            )
+        )
+    else:
+        for target in targets:
+            print(
+                f"{target.bytes / 1048576:9.1f}M  {target.kind:8}  "
+                f"{target.reason:26}  {target.path}"
+            )
+        print(
+            f"-- {len(targets)} target(s), {total / 1073741824:.2f} GB reclaimable"
+            if targets
+            else "nothing to reclaim"
+        )
+
+    if args.apply:
+        freed = retention.apply(targets)
+        print(f"freed {freed / 1073741824:.2f} GB")
+    elif targets:
+        print("dry run; pass --apply to delete")
+    return 0
+
+
 # -------------------------------------------------------------------- streams
 
 
@@ -1066,6 +1111,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--platform", default="tiktok", choices=["tiktok", "reels", "shorts", "linkedin", "x"]
     )
     streams_cmd.set_defaults(func=cmd_streams)
+
+    cleanup_cmd = sub.add_parser("cleanup", help="reclaim disk from finished live/project runs")
+    cleanup_cmd.add_argument(
+        "--older-than",
+        type=float,
+        default=6.0,
+        metavar="HOURS",
+        help="a run must be idle this long before it qualifies (default: 6)",
+    )
+    cleanup_cmd.add_argument("--apply", action="store_true", help="delete instead of only listing")
+    cleanup_cmd.add_argument("--json", action="store_true")
+    cleanup_cmd.set_defaults(func=cmd_cleanup)
 
     doctor = sub.add_parser("doctor", help="report installed capabilities")
     doctor.set_defaults(func=cmd_doctor)

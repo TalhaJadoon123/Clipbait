@@ -41,6 +41,7 @@ ExecStart=%h/Repos/Clipbait/.venv/bin/python %h/Repos/Clipbait/scripts/supervise
   --concurrency 1 \
   --per-query 8 \
   --check 300 \
+  --prune-hours 6 \
   --platform shorts \
   --live \
   --now \

@@ -233,6 +233,21 @@ def resolve_channels(channels, timeout: int):
     return found
 
 
+def prune_disk(settle_seconds: float) -> None:
+    """Reclaim finished runs' disk each cycle. Never touches in-flight work."""
+    from clipbait import retention
+
+    try:
+        targets = retention.plan(settle_seconds=settle_seconds)
+    except Exception as exc:  # noqa: BLE001 - disk hygiene must not stop the roster
+        log(f"prune plan failed: {type(exc).__name__}: {exc}")
+        return
+    if not targets:
+        return
+    freed = retention.apply(targets)
+    log(f"pruned {len(targets)} finished run(s), freed {freed / 1073741824:.2f} GB")
+
+
 def load_terms(value: str, path: str) -> list[str]:
     """Comma-separated terms plus any lines in a file (blank/# skipped)."""
     terms = [t.strip() for t in (value or "").split(",") if t.strip()]
@@ -277,6 +292,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-viewers", type=int, default=3000, help="only clip rooms at least this big")
     parser.add_argument("--per-query", type=int, default=12, help="rooms to rank per query")
     parser.add_argument("--check", type=int, default=120, help="seconds between re-ranks")
+    parser.add_argument(
+        "--prune-hours",
+        type=float,
+        default=6.0,
+        metavar="HOURS",
+        help="reclaim disk from runs idle this long each cycle (0 disables; default 6)",
+    )
     parser.add_argument("--resolve-limit", type=int, default=12, help="(kept for symmetry)")
     parser.add_argument("--mature-terms", default="", help="extra comma-separated adult/deny terms")
     parser.add_argument(
@@ -344,6 +366,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         while running:
+            if args.prune_hours > 0:
+                prune_disk(args.prune_hours * 3600)
             streams = discover_streams(search_terms, args.per_query, RESOLVE_TIMEOUT)
             if channels:
                 seen_urls = {s.url for s in streams}

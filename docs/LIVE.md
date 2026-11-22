@@ -389,6 +389,37 @@ this person as possible" holds while they are live, and the roster still fills
 with the biggest other rooms when they are not. Priority names are also searched,
 so a favoured streamer is discovered even when no topic query matches their room.
 
+`--channels` watches a fixed channel's `/live` room directly, which a text search
+cannot do when a streamer's live titles omit their own name (iShowSpeed streams
+"EXPLORING VICE CITY", not "iShowSpeed"). Offline channels drop out silently, so
+the roster still fills from the normal queries:
+
+```bash
+  --channels "https://www.youtube.com/@IShowSpeed"
+```
+
+### Disk never fills
+
+A roster never stops, and its raw material — HLS segments, fetched sources,
+per-clip windows — grows until the recorder can no longer write. `--prune-hours`
+(default 6) runs the same reclaim the `clipbait cleanup` command exposes, once per
+cycle, and it is safe by construction:
+
+* a **monitor** directory is pruned only when nothing inside it has been written
+  for the window (the recorder appends to one monitor at a time, so a quiet one is
+  finished);
+* a **project source** is pruned only when the project is terminal
+  (`completed`/`failed`) *and* idle — a long transcription leaves the file
+  untouched for hours while it is still needed to render the clips.
+
+Preview it any time without deleting:
+
+```bash
+.venv/bin/clipbait cleanup              # list what would go
+.venv/bin/clipbait cleanup --apply      # delete it
+.venv/bin/clipbait cleanup --older-than 12 --apply
+```
+
 Two policies keep a roster run honest and safe, and both are off/blank by default:
 
 * **Mature rooms.** `--mature-terms` (on top of a built-in adult list) plus

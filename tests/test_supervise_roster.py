@@ -176,3 +176,26 @@ def test_resolve_channels_survives_a_channel_that_errors(monkeypatch):
 
     monkeypatch.setattr(discover, "resolve_channel_live", boom)
     assert sup.resolve_channels(["Broken"], timeout=5) == []
+
+
+def test_prune_disk_applies_plan_and_survives_errors(monkeypatch):
+    from clipbait import retention
+
+    calls = {"applied": []}
+    monkeypatch.setattr(
+        retention,
+        "plan",
+        lambda *, settle_seconds: [
+            retention.PruneTarget(sup.Path("/tmp/x"), "monitor", 1024, "idle 7h")
+        ],
+    )
+    monkeypatch.setattr(retention, "apply", lambda targets: calls["applied"].extend(targets) or 1024)
+
+    sup.prune_disk(6 * 3600)  # does not raise
+    assert len(calls["applied"]) == 1
+
+    def boom(*, settle_seconds):
+        raise RuntimeError("disk gone")
+
+    monkeypatch.setattr(retention, "plan", boom)
+    sup.prune_disk(6 * 3600)  # a prune failure must never stop the roster
