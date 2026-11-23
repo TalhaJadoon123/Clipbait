@@ -527,6 +527,47 @@ def test_process_project_link_mode_never_downloads_the_whole_video(
     assert storage.resolve(clip["render_path"]).exists()
 
 
+def test_transcript_only_skips_the_audio_and_uses_the_cached_transcript(
+    source, transcript, monkeypatch
+):
+    project = make_link_project()
+    storage.write_json(storage.transcript_path(project["id"]), transcript.model_dump())
+
+    def explode(*_a, **_k):
+        raise AssertionError("transcript-only mode must not touch the audio")
+
+    from dataclasses import replace
+
+    from clipbait.config import get_settings
+
+    monkeypatch.setattr("clipbait.ingest.fetch_audio", explode)
+    monkeypatch.setattr(pipeline.media, "extract_audio", explode)
+    monkeypatch.setattr(pipeline.media, "audio_rms", explode)
+    monkeypatch.setattr(
+        "clipbait.ingest.fetch_section",
+        lambda url, start, end, target, **k: shutil.copyfile(source, target) or target,
+    )
+    monkeypatch.setattr(
+        pipeline, "get_settings", lambda: replace(get_settings(), transcript_only=True)
+    )
+    monkeypatch.setattr(
+        pipeline.analyze,
+        "analyze",
+        lambda *a, **k: (
+            [Highlight(start=0.0, end=14.0, title="Moment", hook="Moment", scores={"overall": 80})],
+            {"provider": "stub"},
+        ),
+    )
+
+    result = pipeline.process_project(project["id"])
+
+    assert result["clips"] == 1
+    assert db.get_project(project["id"])["status"] == "completed"
+    # No full-audio download or extraction was left on disk.
+    assert not storage.link_audio_path(project["id"]).exists()
+    assert not storage.audio_path(project["id"]).exists()
+
+
 def test_link_mode_shifts_words_and_chat_to_the_clip_window(source, transcript, monkeypatch):
     project = make_link_project()
     clip = db.create_clip(

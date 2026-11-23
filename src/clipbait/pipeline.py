@@ -144,50 +144,73 @@ def process_project(project_id: str, job_id: str | None = None) -> dict:
         raise ValueError(f"unknown project {project_id}")
     options = _project_options(project)
     settings = get_settings()
-    project = ensure_source(project, job_id)
 
-    link = _link_mode(project, options)
-    if link:
-        audio_input = storage.link_audio_path(project_id)
-        if not audio_input.exists():
-            raise media.MediaError("link-mode audio missing after ingest")
-        info = media.probe(audio_input)
-    else:
-        source = storage.resolve(project["source_path"]) if project.get("source_path") else None
-        if not source or not source.exists():
-            raise media.MediaError("source file missing after ingest")
-        audio_input = source
-        info = media.probe(source)
-    db.update(
-        "projects",
-        project_id,
-        {"duration": info.duration, "status": "transcribing", "error": None},
-    )
-
-    jobs.progress(job_id, 0.1, "audio", "Extracting audio")
-    audio = media.extract_audio(audio_input, storage.audio_path(project_id))
-
-    transcript = _load_transcript(project_id) if info.duration > 0 else None
-    if transcript is None:
-        provider = transcribe.get_transcriber(settings)
-        jobs.progress(
-            job_id,
-            0.16,
-            "transcribing",
-            f"Transcribing with {type(provider).__name__.replace('Transcriber', '').lower()}",
+    cached = _load_transcript(project_id)
+    if settings.transcript_only and cached is not None and cached.duration > 0:
+        # Transcript-only run: the full audio exists only to transcribe and to
+        # score energy. When the transcript is already cached (a 24h VOD's audio
+        # is gigabytes), skip the source entirely and rank without energy.
+        transcript = cached
+        audio = None
+        db.update(
+            "projects",
+            project_id,
+            {"duration": transcript.duration, "status": "transcribing", "error": None},
         )
-        transcript = provider.transcribe(
-            audio,
-            language="auto" if options.language == "auto" else options.language,
-            source_url=project.get("source_url"),
-        )
-        transcript.duration = transcript.duration or info.duration
-        storage.write_json(storage.transcript_path(project_id), transcript.model_dump())
     else:
-        jobs.progress(job_id, 0.34, "transcribing", "Reusing cached transcript")
+        project = ensure_source(project, job_id)
+        link = _link_mode(project, options)
+        if link:
+            audio_input = storage.link_audio_path(project_id)
+            if not audio_input.exists():
+                raise media.MediaError("link-mode audio missing after ingest")
+            info = media.probe(audio_input)
+        else:
+            source = storage.resolve(project["source_path"]) if project.get("source_path") else None
+            if not source or not source.exists():
+                raise media.MediaError("source file missing after ingest")
+            audio_input = source
+            info = media.probe(source)
+        db.update(
+            "projects",
+            project_id,
+            {"duration": info.duration, "status": "transcribing", "error": None},
+        )
+
+        jobs.progress(job_id, 0.1, "audio", "Extracting audio")
+        audio = media.extract_audio(audio_input, storage.audio_path(project_id))
+
+        transcript = _load_transcript(project_id) if info.duration > 0 else None
+        if transcript is None:
+            provider = transcribe.get_transcriber(settings)
+            jobs.progress(
+                job_id,
+                0.16,
+                "transcribing",
+                f"Transcribing with {type(provider).__name__.replace('Transcriber', '').lower()}",
+            )
+            transcript = provider.transcribe(
+                audio,
+                language="auto" if options.language == "auto" else options.language,
+                source_url=project.get("source_url"),
+            )
+            transcript.duration = transcript.duration or info.duration
+            storage.write_json(storage.transcript_path(project_id), transcript.model_dump())
+        else:
+            jobs.progress(job_id, 0.34, "transcribing", "Reusing cached transcript")
 
     jobs.progress(job_id, 0.42, "analyzing", "Reading the room")
-    energy = media.audio_rms(audio)
+    energy = media.audio_rms(audio) if audio is not None else []
+    if audio is not None:
+        # The full-audio intermediates were only needed to transcribe and to
+        # score energy; each clip is cut from its own remote window, never from
+        # these files. On a 24h VOD they are ~5GB, so drop them before rendering
+        # to keep peak disk flat (audio.wav regenerates on any retry).
+        for stale in (audio, storage.link_audio_path(project_id)):
+            try:
+                stale.unlink(missing_ok=True)
+            except OSError:
+                pass
     highlights, analysis_meta = analyze.analyze(
         transcript, options, energy=energy, settings=settings
     )
