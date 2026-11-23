@@ -686,6 +686,45 @@ def test_link_mode_falls_back_to_a_full_download(source, transcript, monkeypatch
     assert updated["meta"]["link_mode"] is False
 
 
+def test_transcript_only_refuses_a_full_source_download(source, transcript, monkeypatch):
+    # On a transcript-only run the source is a multi-hour livestream VOD, so
+    # "fall back to downloading the full source" would pull gigabytes and can
+    # fill the disk mid-batch. The clip must fail instead, so a later retry can
+    # pick it up once the transient cause (usually a bot check) has cleared.
+    project = make_link_project()
+    clip = db.create_clip(
+        {
+            "project_id": project["id"],
+            "title": "No window",
+            "hook": "No window",
+            "start": 0.0,
+            "end": 6.0,
+            "caption_preset": "default",
+            "reframe_mode": "center",
+        }
+    )
+
+    def broken(*_a, **_k):
+        raise media.MediaError("no window available")
+
+    from dataclasses import replace
+
+    from clipbait.config import get_settings
+
+    monkeypatch.setattr("clipbait.ingest.fetch_section", broken)
+    monkeypatch.setattr("clipbait.ingest.fetch_hls_window", broken)
+    monkeypatch.setattr(pipeline, "ingest_source", broken)
+    monkeypatch.setattr(
+        pipeline, "get_settings", lambda: replace(get_settings(), transcript_only=True)
+    )
+
+    with pytest.raises(media.MediaError, match="full download is disabled"):
+        pipeline.render_clip_record(clip["id"], transcript=transcript)
+
+    # Nothing was downloaded, so the project still has no local source.
+    assert db.get_project(project["id"])["source_path"] is None
+
+
 def test_cleanup_outputs_removes_the_project_dir(source):
     project = make_project(source)
     directory = storage.project_dir(project["id"])

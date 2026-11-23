@@ -532,6 +532,15 @@ def _fetch_clip_window(project: dict, clip: dict, on_progress=None) -> tuple[Pat
         )
         return path, float(clip["start"]), True
     except Exception as exc:  # noqa: BLE001 - degrade to the reliable path
+        # A whole-source download is only sane for a short video. On a
+        # transcript-only run the source is a multi-hour livestream VOD, so
+        # "download the full source" would pull many gigabytes and can fill the
+        # disk mid-batch. Fail the clip instead; a later retry picks it up once
+        # the transient cause (usually a bot check) has cleared.
+        if get_settings().transcript_only:
+            raise media.MediaError(
+                f"no remote window for this clip and full download is disabled: {exc}"
+            ) from exc
         log.warning("section fetch failed (%s); downloading the full source", exc)
         updated = _download_full(project)
         path = updated.get("source_path")

@@ -96,6 +96,62 @@ def run_vod(url: str, clips: int, *, title: str | None = None) -> dict:
     return {**result, "project_id": project["id"]}
 
 
+# Stop before the disk fills: below this much free space a render would leave a
+# truncated file, so the run halts cleanly and can be resumed.
+_MIN_FREE_BYTES = 2 * 1024**3
+
+
+def _free_bytes(path: Path) -> int:
+    import shutil as _shutil
+
+    try:
+        return _shutil.disk_usage(path).free
+    except OSError:
+        return _MIN_FREE_BYTES
+
+
+def resume_vod(url: str, clips: int, *, title: str | None = None) -> dict:
+    """Render only the clips that are not finished yet, keeping good renders.
+
+    ``process_project`` rebuilds the whole clip list, which discards renders
+    that already succeeded. A crash (or a full disk) mid-batch leaves a mix of
+    ``ready``/``failed``/``draft`` rows, so this path renders just the unfinished
+    ones and leaves the completed work untouched.
+    """
+    from clipbait.pipeline import render_clip_record
+
+    project = project_for(url, clips, title)
+    db.update("projects", project["id"], {"options": {**SPEED_OPTIONS, "clips": clips}})
+    rows = db.list_clips(project["id"])
+    pending = [clip for clip in rows if clip["status"] != "ready"]
+    log.info(
+        "resume %s: %d ready, %d to render",
+        project["id"],
+        len(rows) - len(pending),
+        len(pending),
+    )
+    rendered = 0
+    for index, clip in enumerate(pending):
+        if _free_bytes(get_settings().data_dir) < _MIN_FREE_BYTES:
+            log.error("stopping: free space below %dG", _MIN_FREE_BYTES // 1024**3)
+            break
+        log.info("render %d/%d %s", index + 1, len(pending), clip["id"])
+        try:
+            render_clip_record(clip["id"])
+            rendered += 1
+        except Exception as exc:  # noqa: BLE001 - one bad clip must not stop the batch
+            log.exception("clip %s failed", clip["id"])
+            db.update(
+                "clips",
+                clip["id"],
+                {"status": "failed", "meta": {**clip["meta"], "error": str(exc)}},
+            )
+    ready = [clip for clip in db.list_clips(project["id"]) if clip["status"] == "ready"]
+    db.update("projects", project["id"], {"status": "completed"})
+    log.info("resume %s done: %d rendered, %d ready total", project["id"], rendered, len(ready))
+    return {"project_id": project["id"], "clips": rendered, "ready": len(ready), "transcriber": "cached"}
+
+
 def publish(limit: int, *, live: bool, min_score: float, project_match: str | None) -> int:
     from clipbait.publish import PublishOptions, publish_provider, publish_queue
 
@@ -132,6 +188,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--publish-limit", type=int, default=0, help="clips to publish (0 = skip)")
     parser.add_argument("--min-score", type=float, default=0.0)
     parser.add_argument("--live", action="store_true", help="actually upload")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="render only unfinished clips of an existing project (keeps good renders)",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
@@ -150,7 +211,10 @@ def main(argv: list[str] | None = None) -> int:
     summary = []
     for url in args.url:
         try:
-            summary.append(run_vod(url, args.clips, title=args.title))
+            if args.resume:
+                summary.append(resume_vod(url, args.clips, title=args.title))
+            else:
+                summary.append(run_vod(url, args.clips, title=args.title))
         except Exception as exc:  # noqa: BLE001 - one bad VOD must not stop the batch
             log.exception("VOD failed: %s", url)
             summary.append({"source_url": url, "error": f"{type(exc).__name__}: {exc}"})
