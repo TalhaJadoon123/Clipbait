@@ -6,6 +6,8 @@ and easy to test: overlap suppression, timeline diversity and score calibration.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from ..schema import Highlight
 
 MIN_DURATION = 15.0
@@ -43,15 +45,29 @@ def select(
     max_clips: int = 8,
     max_overlap: float = 0.28,
     min_gap_seconds: float = 2.0,
+    min_score: float | None = None,
+    group_key: Callable[[Highlight], str] | None = None,
+    max_per_group: int | None = None,
 ) -> list[Highlight]:
-    """Greedy score-ordered selection with overlap suppression."""
+    """Greedy score-ordered selection with overlap suppression.
+
+    ``group_key`` + ``max_per_group`` cap how often a clip may repeat a label
+    (used to stop a long batch shipping the same title fifty times).
+    ``min_score`` lowers the absolute floor when a caller has a reason to
+    accept a slightly weaker tail (e.g. to keep every clip on the reference
+    title shape); it can only lower the floor, never raise it.
+    """
     pool = [h for h in candidates if MIN_DURATION <= h.duration <= MAX_DURATION]
     pool.sort(key=lambda h: h.scores.overall, reverse=True)
 
     selected: list[Highlight] = []
+    used: dict[str, int] = {}
     for candidate in pool:
         if len(selected) >= max_clips:
             break
+        group = group_key(candidate) if group_key is not None else ""
+        if group and max_per_group is not None and used.get(group, 0) >= max_per_group:
+            continue
         clash = False
         for chosen in selected:
             if overlap_ratio(candidate, chosen) > max_overlap:
@@ -62,6 +78,8 @@ def select(
                 break
         if not clash:
             selected.append(candidate)
+            if group:
+                used[group] = used.get(group, 0) + 1
 
     # A weak tail hurts the product: drop anything far below the best clip.
     # The absolute floor only applies when the best clip clears it. Casual
@@ -73,6 +91,8 @@ def select(
         floor = ceiling * 0.55
         if ceiling >= 25:
             floor = max(25.0, floor)
+        if min_score is not None:
+            floor = min(floor, min_score)
         selected = [h for h in selected if h.scores.overall >= floor]
 
     selected.sort(key=lambda h: h.start)

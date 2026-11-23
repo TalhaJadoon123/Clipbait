@@ -18,6 +18,7 @@ rather than inventing a claim the footage cannot back up.
 from __future__ import annotations
 
 import re
+from collections import Counter
 
 # Verb phrasings, most specific first. Each entry is (pattern, rendered verb).
 # ``{obj}`` is substituted with the detected object (may already read as a noun
@@ -66,7 +67,10 @@ _OBJECT_FALLBACKS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("dog", "cat", "animal", "alligator", "shark"), "a GTA 6 Animal"),
 )
 
-_QUOTED = re.compile(r"[\"“']([^\"”']{2,30})[\"”']")
+# Only real quotation marks count. Auto-captions use the ASCII apostrophe for
+# contractions ("don't", "shouldn't"), so treating it as a quote turns two
+# unrelated contractions into a bogus "shouted" object ("T stop. so, shouldn").
+_QUOTED = re.compile(r"[\"“”]([^\"“”]{2,30})[\"“”]")
 _PROPER = re.compile(r"\b([A-Z][a-z]{2,})(?:\s+([A-Z][a-z]{2,}))?")
 _STOP = {
     "the", "and", "but", "you", "that", "this", "with", "have", "what", "your",
@@ -102,6 +106,28 @@ _TRAIL_FILLER = {
     "there", "again", "though", "anyway",
 }
 _TRAIL_STOP = _PHRASE_STOP | _PREPS | _PRONOUNS | _TRAIL_FILLER
+
+# Common words a caption track still capitalises — at the start of a cue, or
+# because the ASR re-segments a sentence. They look exactly like a proper noun
+# ("Speed Gets Then"), so they are barred from being objects *and* from the
+# name gazetteer. Possessives ("his", "her") are deliberately absent so a real
+# object such as "His Family Name" survives.
+_COMMON_CAPS = frozenset(
+    """
+    what this these those they them that then than there here where when why how
+    who which some any every just like really very much many well come came give
+    take thank thanks look should could would might maybe real stand hour figure
+    enough now again later remember forget want need everything nothing right back
+    front whole fine okay yeah
+    hold hair away something today sir man done going gonna wanna gotta
+    somewhere info helped looking guys wait lead check most type doubt doubts
+    worry really scared
+    """.split()
+)
+
+_LOWER_WORD = re.compile(r"[a-z]{3,}")
+_CAP_WORD = re.compile(r"[A-Z][a-z]{3,}")
+_SENTENCE_END = ".!?"
 
 
 def _phrase_after(text: str, position: int) -> str:
@@ -150,20 +176,100 @@ def _tone_emoji(text: str) -> str:
     return "😭💀"
 
 
-def _named_object(text: str) -> str:
-    """A quoted shout or a capitalised name — the strongest object signals."""
+def known_names(words: object) -> list[str]:
+    """Names a Speed clip can safely hang a title on.
+
+    A one-word title built from a transcript is only as honest as the
+    transcript's spelling. Auto-captions capitalise the start of every cue, so
+    a bare capital is no evidence of a name, and ASR stitches split words into
+    fragments ("T stop", "S we"). The one reliable signal is a word that
+    recurs, sits *mid-sentence*, and is not also a common English word — so the
+    caller computes that set once and passes it to :func:`speed_title`.
+    """
+    capitalised: Counter[str] = Counter()
+    lowercased: Counter[str] = Counter()
+    previous = ""
+    for word in words:  # duck-typed: anything with a ``.text`` attribute
+        token = str(getattr(word, "text", word)).strip()
+        if _LOWER_WORD.fullmatch(token):
+            lowercased[token] += 1
+        if _CAP_WORD.fullmatch(token) and previous and previous[-1] not in _SENTENCE_END:
+            capitalised[token] += 1
+        previous = token
+    return sorted(
+        token
+        for token, count in capitalised.items()
+        if count >= 3
+        and token.lower() not in _COMMON_CAPS
+        and lowercased[token.lower()] < count
+    )
+
+
+def _named_object(text: str, names: frozenset[str] | None = None) -> str:
+    """A quoted shout or a recurring proper name.
+
+    A quoted shout is trusted as-is. A bare capitalised word is only trusted
+    when ``names`` (see :func:`known_names`) vouches for it, because on
+    auto-captions a lone capital is usually just a sentence start.
+    """
     quoted = _QUOTED.search(text)
     if quoted:
-        phrase = re.sub(r"\s+", " ", quoted.group(1)).strip()
-        if 1 <= len(phrase.split()) <= 4:
+        phrase = re.sub(r"\s+", " ", quoted.group(1)).strip().strip(" .,!?;:\"'")
+        # Inside auto-captions a quoted line is a whole spoken sentence, not an
+        # object; only a short phrase with no internal punctuation can be one.
+        if 1 <= len(phrase.split()) <= 3 and not any(ch in phrase for ch in ",;.!?"):
             return phrase if phrase[0].isupper() else phrase.capitalize()
 
+    if not names:
+        return ""
     for match in _PROPER.finditer(text):
-        candidate = " ".join(part for part in match.groups() if part).strip()
-        if candidate.lower() in _STOP or len(candidate) < 4:
+        first = match.group(1)
+        if first not in names:
             continue
-        return candidate
+        second = match.group(2)
+        if second and second in names:
+            return f"{first} {second}"
+        return first
     return ""
+
+
+# A phrase cannot *start* with a conjunction, determiner or bare verb left over
+# from the clause before it ("Or You're Dead", "Not Mean", "Go Kind"). Kept
+# separate from _COMMON_CAPS because these are only bad in the leading slot.
+_OBJECT_LEAD_BLOCK = frozenset(
+    """
+    or and but so nor yet if because when then that not no go all just like some
+    any every this these those there here
+    do does did done make makes made say says said tell tells told get gets got
+    give gives put keep let hold see are is am be been was were has have had can
+    will would could should
+    """.split()
+)
+
+
+def _clean_object(phrase: str) -> str:
+    """Reject a grabbed phrase that cannot read as a noun object."""
+    if not phrase:
+        return ""
+    words = phrase.split()
+    if len(words) > 3:
+        return ""
+    for word in words:
+        low = word.lower().strip("'")
+        # An apostrophe in the object is almost always an ASR contraction the
+        # grabber walked into ("All be while i", "S we"), not a noun.
+        if len(word) < 2 or low in _PRONOUNS or "'" in word:
+            return ""
+        # A conjunction, determiner or bare verb anywhere in the phrase means
+        # the grabber walked across a clause boundary ("Squab Wide All",
+        # "Work Can Do", "Scare Change").
+        if low in _OBJECT_LEAD_BLOCK:
+            return ""
+    if words[0].lower() in _COMMON_CAPS or words[0].lower() in _OBJECT_LEAD_BLOCK:
+        return ""
+    if words[-1].lower() in _COMMON_CAPS:
+        return ""
+    return phrase
 
 
 def _topic_object(text: str, keywords: list[str] | None) -> str:
@@ -176,10 +282,18 @@ def _topic_object(text: str, keywords: list[str] | None) -> str:
     return ""
 
 
-def speed_title(text: str, keywords: list[str] | None = None) -> str:
+def speed_title(
+    text: str,
+    keywords: list[str] | None = None,
+    *,
+    names: frozenset[str] | None = None,
+) -> str:
     """Compose ``Speed <VERB> <OBJECT> in GTA 6 <EMOJI>`` or return ``""``.
 
-    ``""`` means "no confident shape"; the caller should keep the plain title.
+    ``""`` means "no confident shape"; the caller should keep the plain title
+    rather than inventing a claim the footage cannot back up. ``names`` is the
+    clip's gazetteer (see :func:`known_names`); without it a bare capitalised
+    word is not trusted as a name.
     """
     body = re.sub(r"\s+", " ", text or "").strip()
     if len(body) < 12:
@@ -197,8 +311,8 @@ def speed_title(text: str, keywords: list[str] | None = None) -> str:
         return ""
 
     obj = (
-        _named_object(body)
-        or _phrase_after(body, verb_end)
+        _named_object(body, names)
+        or _clean_object(_phrase_after(body, verb_end))
         or _topic_object(body, keywords)
     )
     if not obj:
@@ -215,6 +329,43 @@ def speed_title(text: str, keywords: list[str] | None = None) -> str:
 
     title = re.sub(r"\s+", " ", title).strip()
     return f"{title[:88]} {_tone_emoji(body)}"
+
+
+_QUOTE_WORD = re.compile(r"[A-Za-z][A-Za-z']*")
+_QUOTE_HYPE = ("crazy", "what", "why", "how", "oh", "no", "bro", "look", "chat")
+
+
+def quote_title(text: str, limit: int = 70) -> str:
+    """A substantive line Speed actually said — the honest fallback.
+
+    Used only when the reference shape cannot be built, so a clip never ships a
+    one-word fragment ("Why", "Mean") as its title. Picks the fullest sentence
+    in the window, not the first, then trims it to a title length.
+    """
+    parts = re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", text or ""))
+    pool = [p.strip(" -") for p in parts if len(_QUOTE_WORD.findall(p)) >= 4]
+    if not pool:
+        return ""
+
+    def score(sentence: str) -> float:
+        count = len(_QUOTE_WORD.findall(sentence))
+        points = 4.0 if 5 <= count <= 14 else (2.0 if count <= 20 else 0.0)
+        low = sentence.lower()
+        points += sum(1.5 for cue in _QUOTE_HYPE if cue in low)
+        points += min(3, low.count("!"))
+        if low.startswith(("and ", "but ", "so ", "because ")):
+            points -= 2
+        return points
+
+    pool.sort(key=score, reverse=True)
+    chosen = re.sub(r"^(so|okay|ok|and|but|well|yeah|oh)[, ]+", "", pool[0], flags=re.IGNORECASE)
+    chosen = chosen.rstrip(" .!?,")
+    if len(chosen) > limit:
+        chosen = chosen[:limit].rsplit(" ", 1)[0].rstrip(" ,")
+    if not chosen:
+        return ""
+    chosen = chosen[:1].upper() + chosen[1:]
+    return f"{chosen} {_tone_emoji(chosen)}"
 
 
 # Tags the reference channel uses on every upload; combined with transcript

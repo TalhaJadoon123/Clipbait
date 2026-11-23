@@ -6,7 +6,7 @@ import logging
 
 from ..config import Settings, get_settings
 from ..schema import ClipScores, Highlight, ProjectOptions, Transcript
-from . import prompts, ranking
+from . import packaging, prompts, ranking
 from .heuristics import candidate_highlights, keywords
 from .llm import LLMClient, LLMError
 
@@ -135,6 +135,52 @@ def _hashtags(highlight: Highlight) -> list[str]:
     return seen[:8]
 
 
+def _window_text(transcript: Transcript, highlight: Highlight) -> str:
+    return transcript.text_between(highlight.start, highlight.end) or highlight.hook or ""
+
+
+def _prefer_titled(
+    raw: list[Highlight],
+    fallback: list[Highlight],
+    options: ProjectOptions,
+    transcript: Transcript,
+    meta: dict,
+) -> list[Highlight]:
+    """Pick the moments that can carry the reference-channel title shape.
+
+    On a long VOD the ranker can choose between many equally good moments. When
+    the project wants reference titles, prefer the ones that actually package
+    as ``Speed <VERB> <OBJECT> in GTA 6`` over higher-scoring moments that
+    cannot — otherwise a 200-clip batch ships half fragments. Each title is used
+    once so the channel grid never shows the same phrase twice.
+    """
+    names = frozenset(packaging.known_names(transcript.words))
+    meta["known_names"] = sorted(names)
+
+    titled: dict[tuple[float, float], str] = {}
+    pool: list[Highlight] = []
+    for highlight in raw:
+        title = packaging.speed_title(_window_text(transcript, highlight), highlight.keywords, names=names)
+        if title:
+            pool.append(highlight)
+            titled[(highlight.start, highlight.end)] = title
+
+    if len(pool) < options.clips:
+        # Not enough packagable moments to fill the batch; keep the ranker's
+        # own best picks and let the title step fall back to a quote.
+        return fallback
+
+    return ranking.select(
+        pool,
+        max_clips=options.clips,
+        max_overlap=0.25,
+        min_gap_seconds=3.0,
+        min_score=22.0,
+        group_key=lambda h: titled.get((h.start, h.end), ""),
+        max_per_group=1,
+    )
+
+
 def analyze(
     transcript: Transcript,
     options: ProjectOptions,
@@ -179,6 +225,8 @@ def analyze(
         max_overlap=0.25,
         min_gap_seconds=3.0,
     )
+    if options.title_style == "speed":
+        selected = _prefer_titled(raw, selected, options, transcript, meta)
     if not selected:
         selected = ranking.select(
             candidate_highlights(

@@ -253,11 +253,16 @@ def _create_clip(
     packaging = analyze.packaging_for(highlight, meta)
     text = transcript.text_between(highlight.start, highlight.end) or highlight.hook
     if options.title_style == "speed":
-        # Reference-channel packaging. Only overrides when the transcript gives
-        # a confident shape; otherwise the plain title stands.
+        # Reference-channel packaging. The named-object path is gated by the
+        # project's name gazetteer so a sentence-start capital is not mistaken
+        # for a proper noun; when no confident shape exists the clip gets a
+        # substantive quote rather than a one-word fragment.
         from .analyze import packaging as speed_packaging
 
-        styled = speed_packaging.speed_title(text, highlight.keywords)
+        names = frozenset(meta.get("known_names") or ())
+        styled = speed_packaging.speed_title(text, highlight.keywords, names=names)
+        if not styled:
+            styled = speed_packaging.quote_title(text)
         if styled:
             packaging = {**packaging, "title": styled}
         packaging = {**packaging, "hashtags": speed_packaging.speed_tags(highlight.keywords)}
