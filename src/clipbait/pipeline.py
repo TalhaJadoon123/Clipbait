@@ -492,26 +492,43 @@ def _download_full(project: dict) -> dict:
 def _fetch_clip_window(project: dict, clip: dict, on_progress=None) -> tuple[Path, float, bool]:
     """Fetch just this clip's section, falling back to a full download once.
 
-    Returns ``(path, offset, used_link)``. ``offset`` is the clip start inside
-    the fetched window (``0`` when the whole file was downloaded), and
-    ``used_link`` says whether the result really is a short window.
+    Returns ``(path, offset, used_link)``. ``offset`` is the source timestamp of
+    the fetched window's first frame (``0`` when the whole file was
+    downloaded), and ``used_link`` says whether the result really is a short
+    window.
     """
-    from .ingest import fetch_section
+    from .ingest import fetch_hls_window, fetch_section
 
     target = storage.clip_window_path(project["id"], clip["id"])
+
+    def report(base: float):
+        return (
+            (lambda fraction, message: on_progress(base + 0.08 * fraction, message))
+            if on_progress
+            else None
+        )
+
+    if on_progress:
+        on_progress(0.01, "Fetching this moment only")
+    # Fast path: pull only the covering HLS fragments, concurrently. The
+    # window is fragment-aligned, so the returned offset is where its first
+    # frame actually sits in the source.
     try:
-        if on_progress:
-            on_progress(0.01, "Fetching this moment only")
+        path, offset = fetch_hls_window(
+            project["source_url"], clip["start"], clip["end"], target, on_progress=report(0.01)
+        )
+        return path, offset, True
+    except Exception as exc:  # noqa: BLE001 - degrade to the general path
+        log.warning("HLS window fetch failed (%s); trying the ffmpeg section", exc)
+    # General path: ffmpeg reads an HLS/DASH section sequentially. Slower on a
+    # throttled connection but works for sources without fragment playlists.
+    try:
         path = fetch_section(
             project["source_url"],
             clip["start"],
             clip["end"],
             target,
-            on_progress=(
-                (lambda fraction, message: on_progress(0.01 + 0.08 * fraction, message))
-                if on_progress
-                else None
-            ),
+            on_progress=report(0.01),
         )
         return path, float(clip["start"]), True
     except Exception as exc:  # noqa: BLE001 - degrade to the reliable path

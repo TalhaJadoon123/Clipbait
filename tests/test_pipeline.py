@@ -54,6 +54,19 @@ def fixed_transcriber(monkeypatch, transcript) -> FixedTranscriber:
     return transcriber
 
 
+@pytest.fixture(autouse=True)
+def _offline_hls(monkeypatch):
+    """Force the deterministic section path in tests.
+
+    The HLS fast path resolves real playback URLs, so by default it is disabled
+    here; tests that exercise it patch ``fetch_hls_window`` themselves.
+    """
+    def offline(*_args, **_kwargs):
+        raise media.MediaError("HLS fast path disabled in tests")
+
+    monkeypatch.setattr("clipbait.ingest.fetch_hls_window", offline)
+
+
 def test_process_project_renders_a_clip(source, transcript, monkeypatch):
     project = make_project(
         source,
@@ -566,6 +579,29 @@ def test_transcript_only_skips_the_audio_and_uses_the_cached_transcript(
     # No full-audio download or extraction was left on disk.
     assert not storage.link_audio_path(project["id"]).exists()
     assert not storage.audio_path(project["id"]).exists()
+
+
+def test_fetch_clip_window_returns_the_fragment_aligned_offset(source, monkeypatch):
+    # Fragments are 6s, so a window starts at a fragment boundary, not at the
+    # clip start. The offset must point at where the file really begins or the
+    # renderer cuts the wrong frames and captions drift.
+    project = make_link_project()
+    clip = db.create_clip(
+        {"project_id": project["id"], "title": "M", "hook": "M", "start": 12.0, "end": 40.0}
+    )
+
+    def fake_hls(url, start, end, target, *, on_progress=None):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        return target, 6.0
+
+    monkeypatch.setattr("clipbait.ingest.fetch_hls_window", fake_hls)
+
+    path, offset, used_link = pipeline._fetch_clip_window(project, clip)
+
+    assert used_link is True
+    assert offset == 6.0
+    assert Path(path).exists()
 
 
 def test_link_mode_shifts_words_and_chat_to_the_clip_window(source, transcript, monkeypatch):

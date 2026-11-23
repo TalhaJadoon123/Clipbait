@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import shutil
+import sys
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -34,6 +35,23 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _default_ytdlp() -> str:
+    """Resolve yt-dlp, preferring the copy installed beside this interpreter.
+
+    A pip-installed yt-dlp in the project's virtualenv ships the ``yt-dlp-ejs``
+    JavaScript components; without them yt-dlp cannot mint a YouTube PO token
+    and the site silently degrades every client to 360p. A distro package on
+    PATH usually lacks them, so the interpreter-local binary wins.
+    """
+    override = _env("CLIPBAIT_YTDLP")
+    if override:
+        return override
+    local = Path(sys.executable).with_name("yt-dlp")
+    if local.exists():
+        return str(local)
+    return shutil.which("yt-dlp") or "yt-dlp"
 
 
 def _env_float(name: str, default: float) -> float:
@@ -169,7 +187,7 @@ def get_settings() -> Settings:
         db_path=Path(_env("CLIPBAIT_DB_PATH", str(data_dir / "clipbait.db"))).expanduser(),
         ffmpeg=_env("CLIPBAIT_FFMPEG", shutil.which("ffmpeg") or "ffmpeg") or "ffmpeg",
         ffprobe=_env("CLIPBAIT_FFPROBE", shutil.which("ffprobe") or "ffprobe") or "ffprobe",
-        ytdlp=_env("CLIPBAIT_YTDLP", shutil.which("yt-dlp") or "yt-dlp") or "yt-dlp",
+        ytdlp=_default_ytdlp(),
         whisper_model=_env("CLIPBAIT_WHISPER_MODEL", "small") or "small",
         whisper_device=_env("CLIPBAIT_WHISPER_DEVICE", "auto") or "auto",
         whisper_compute_type=_env("CLIPBAIT_WHISPER_COMPUTE", "int8") or "int8",

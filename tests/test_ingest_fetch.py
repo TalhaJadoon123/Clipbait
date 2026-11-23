@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,9 +23,12 @@ from clipbait.ingest.downloader import (
     DownloadTracker,
     _cleanup_sidecars,
     _download_message,
+    _hls_streams,
     _link,
+    _segment_range,
     _ytdlp_base,
     fetch_audio,
+    fetch_hls_window,
     fetch_remote,
     fetch_section,
     ingest_local,
@@ -60,6 +64,9 @@ def test_ytdlp_base_flags(monkeypatch):
     assert "--no-playlist" in base
     assert "--concurrent-fragments" in base
     assert "--continue" in base
+    # PO-token minting needs a JS runtime, otherwise YouTube caps at 360p.
+    if shutil.which("node"):
+        assert base[base.index("--js-runtimes") + 1] == "node"
 
 
 # ------------------------------------------------------------- download tracker
@@ -378,6 +385,94 @@ def test_fetch_section_reports_no_output(tmp_path, remote_project, monkeypatch):
         fetch_section(
             "https://example.com/v", 1, 2, storage.clip_window_path("prj_x", "clip_y")
         )
+
+
+# --------------------------------------------------------------------- HLS window
+
+
+def test_hls_streams_falls_back_to_another_player_client(monkeypatch):
+    # A flagged IP gets "confirm you're not a bot" on the default client; the
+    # tv/web_safari pair usually still serves the 1080p HLS ladder.
+    downloader._HLS_CACHE.clear()
+    downloader._HLS_FAILED.clear()
+    seen: list[str] = []
+
+    def fake_capture(cmd, **_kwargs):
+        joined = " ".join(cmd)
+        seen.append(joined)
+        if "player_client=" not in joined:
+            raise media.MediaError("Sign in to confirm you're not a bot")
+        return "https://example.com/video.m3u8\nhttps://example.com/audio.m3u8\n"
+
+    monkeypatch.setattr(downloader, "_capture_ytdlp", fake_capture)
+    monkeypatch.setattr(
+        downloader, "_fetch_text", lambda url, **k: "#EXTM3U\n#EXTINF:6.0,\nseg.ts\n"
+    )
+
+    video, audio = _hls_streams("https://www.youtube.com/watch?v=abc")
+
+    assert video and audio
+    assert any("player_client=tv,web_safari,default" in call for call in seen)
+
+
+def test_hls_streams_remembers_a_source_without_a_playlist(monkeypatch):
+    downloader._HLS_CACHE.clear()
+    downloader._HLS_FAILED.clear()
+
+    def always_fail(cmd, **_kwargs):
+        raise media.MediaError("no formats")
+
+    monkeypatch.setattr(downloader, "_capture_ytdlp", always_fail)
+    with pytest.raises(media.MediaError):
+        _hls_streams("https://example.com/nohls")
+
+    calls: list[int] = []
+    monkeypatch.setattr(
+        downloader, "_capture_ytdlp", lambda cmd, **k: calls.append(1) or "https://x/y.m3u8"
+    )
+    with pytest.raises(media.MediaError, match="cached"):
+        _hls_streams("https://example.com/nohls")
+    assert calls == []
+
+
+def test_segment_range_covers_the_window_with_tail_headroom():
+    segments = [(6.0, f"u{index}") for index in range(20)]
+    first, last, offset = _segment_range(segments, 12.0, 41.5)
+    assert (first, last, offset) == (2, 7, 12.0)
+
+
+def test_fetch_hls_window_downloads_only_the_covering_fragments(
+    tmp_path, remote_project, monkeypatch
+):
+    monkeypatch.setattr(downloader, "ensure_safe_url", lambda url: url)
+    video = [(6.0, f"https://example.com/v{index}") for index in range(20)]
+    audio = [(6.0, f"https://example.com/a{index}") for index in range(20)]
+    monkeypatch.setattr(downloader, "_hls_streams", lambda url: (video, audio))
+
+    def fake_segment(url, path, *, attempts=3):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(url.rsplit("/", 1)[-1].encode())
+
+    monkeypatch.setattr(downloader, "_download_segment", fake_segment)
+
+    seen: dict[str, bytes] = {}
+
+    def fake_run(cmd, **_kwargs):
+        source = Path(cmd[cmd.index("-i") + 1])
+        seen["video"] = source.read_bytes()
+        Path(cmd[-1]).write_bytes(source.read_bytes())
+
+    monkeypatch.setattr(media, "run", fake_run)
+
+    target = storage.clip_window_path(remote_project["id"], "clip_hls")
+    path, offset = fetch_hls_window("https://example.com/v", 12.0, 41.5, target)
+
+    assert path == target
+    assert offset == 12.0
+    # Only fragments 2..7 were fetched, in order, and joined without gaps.
+    assert seen["video"] == b"v2v3v4v5v6v7"
+    # The fragment scratch directory is removed once the window is built.
+    assert not (target.parent / f".{target.stem}.hls").exists()
 
 
 # --------------------------------------------------------------------- probe_url
