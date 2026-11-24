@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from ..schema import ChatMessage, Word
 from ..text import is_caption_noise
 from .presets import POSITIONS, CaptionStyle, get_preset
+from .roman import caption_words, to_roman
 
 ASS_HEADER = """[Script Info]
 ScriptType: v4.00+
@@ -75,13 +76,7 @@ def _dim(color: str, opacity: float) -> str:
 
 
 def escape_text(text: str) -> str:
-    return (
-        text.replace("\\", "\\\\")
-        .replace("{", "(")
-        .replace("}", ")")
-        .replace("\n", " ")
-        .strip()
-    )
+    return text.replace("\\", "\\\\").replace("{", "(").replace("}", ")").replace("\n", " ").strip()
 
 
 def _apply_case(text: str, uppercase: bool) -> str:
@@ -97,13 +92,13 @@ def build_groups(
     """Group words into caption blocks on punctuation, silence and budget."""
     # Drop stage directions and bare symbols here too: a transcript cached
     # before the ingestion filter landed must still render clean captions.
-    usable = [
-        w
-        for w in words
-        if w.end > start and w.start < end and not is_caption_noise(w.text)
-    ]
+    usable = [w for w in words if w.end > start and w.start < end and not is_caption_noise(w.text)]
     if not usable:
         return []
+    # Spell Hindi and Urdu in Roman letters before grouping: the fonts are
+    # Latin-only, and the character budget must count what will actually be
+    # drawn, not the original script.
+    usable = caption_words(usable)
     groups: list[CaptionGroup] = []
     current: list[Word] = []
     group_start = usable[0].start
@@ -246,7 +241,7 @@ def build_captions(
 
 def build_hook(title: str, duration: float = 3.6) -> str:
     """Opening-frame headline, burned for the first seconds only."""
-    text = escape_text(title)
+    text = escape_text(to_roman(title))
     if not text:
         return ""
     if len(text) > 26:
@@ -294,12 +289,15 @@ def build_chat_overlay(
         at = max(offset, cursor)
         if at > span - 1.0:
             continue
-        shown = escape_text(message.text.strip())[:44]
+        shown = escape_text(to_roman(message.text.strip()))[:44]
         if not shown:
             continue
         text = shown
         if show_authors and message.author:
-            text = f"{{\\c&H00D4FFFF&}}{escape_text(message.author)[:16]}: {{\\c&H00FFFFFF&}}{shown}"
+            text = (
+                f"{{\\c&H00D4FFFF&}}{escape_text(to_roman(message.author))[:16]}: "
+                f"{{\\c&H00FFFFFF&}}{shown}"
+            )
         events.append(
             f"Dialogue: 2,{ass_time(at)},{ass_time(min(span, at + hold))},Chat,,0,0,0,,"
             r"{\fad(120,180)}" + text
