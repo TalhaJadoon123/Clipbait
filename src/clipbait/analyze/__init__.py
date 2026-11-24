@@ -6,6 +6,7 @@ import logging
 
 from ..config import Settings, get_settings
 from ..schema import ClipScores, Highlight, ProjectOptions, Transcript
+from ..virality import games, hashtags
 from . import packaging, prompts, ranking
 from .heuristics import candidate_highlights, keywords
 from .llm import LLMClient, LLMError
@@ -126,13 +127,23 @@ def _enrich(highlights: list[Highlight], transcript: Transcript) -> None:
 
 
 def _hashtags(highlight: Highlight) -> list[str]:
-    base = ["shorts", "reels", "tiktok"]
-    tags = [k.replace(" ", "") for k in highlight.keywords[:5] if len(k) > 2]
-    seen: list[str] = []
-    for tag in [*tags, *base]:
-        if tag not in seen:
-            seen.append(tag)
-    return seen[:8]
+    """Discovery tags for a clip, built from what it actually shows.
+
+    The game named in the title or the words leads, then the ranker's/LLM's own
+    keywords, then the general Shorts block as a floor.
+    """
+    game = games.detect(highlight.title, highlight.quote, " ".join(highlight.keywords))[0]
+    tags = hashtags.make(
+        text=highlight.quote or "",
+        title=highlight.title,
+        game=game,
+        ai_tags=highlight.keywords,
+        limit=8,
+    )
+    for filler in ("shorts", "reels", "tiktok"):
+        if filler not in tags and len(tags) < 8:
+            tags.append(filler)
+    return tags[:8]
 
 
 def _window_text(transcript: Transcript, highlight: Highlight) -> str:

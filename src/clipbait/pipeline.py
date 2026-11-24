@@ -288,7 +288,15 @@ def _create_clip(
             styled = speed_packaging.quote_title(text)
         if styled:
             packaging = {**packaging, "title": styled}
-        packaging = {**packaging, "hashtags": speed_packaging.speed_tags(highlight.keywords)}
+        packaging = {
+            **packaging,
+            "hashtags": speed_packaging.speed_tags(
+                highlight.keywords,
+                text=text,
+                title=styled or highlight.title,
+                uploader=str(meta.get("uploader") or ""),
+            ),
+        }
     region = get_region(options.region)
     variants = (
         build_variants(

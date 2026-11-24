@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 
 from ..schema import ClipScores, Highlight
+from . import games
 from .memes import apply_pattern, detect_signals, select_memes
 from .regions import RegionProfile, get_region, platform_limits
 
@@ -53,14 +54,23 @@ def _caption_body(highlight: Highlight, text: str, limit: int) -> str:
     return _trim(body, limit)
 
 
-def _hashtags(region: RegionProfile, keywords: list[str], platform: str) -> list[str]:
+def _hashtags(
+    region: RegionProfile,
+    keywords: list[str],
+    platform: str,
+    *,
+    text: str = "",
+    title: str = "",
+) -> list[str]:
     limit = platform_limits(platform)["hashtags"]
     tags: list[str] = []
     junk = {"right", "first", "thing", "things", "part", "people", "video", "make", "made",
             "going", "really", "actually", "every", "always", "never", "about", "there", "here"}
-    # Specific first: "#kaicenat #gta6" tells a viewer (and the platform) what
-    # this is. The region's evergreen tags are a fallback, not the headline.
-    for tag in [*[k.replace(" ", "") for k in keywords], *region.hashtags]:
+    # The game named in the title or the words leads: "#gta6" tells a viewer (and
+    # the platform) what this is. The region's evergreen tags are a fallback, not
+    # the headline.
+    game_tags = games.tags_of(games.detect(title, text, *(k.replace(" ", "") for k in keywords))[0])[:1]
+    for tag in [*game_tags, *[k.replace(" ", "") for k in keywords], *region.hashtags]:
         cleaned = tag.strip().lstrip("#")
         if not cleaned or cleaned.lower() in junk or len(cleaned) < 4:
             continue
@@ -109,7 +119,7 @@ def build_variants(
             "title": _title_case_hook(base_claim, title_limit),
             "hook": organic_hook,
             "description": caption_body,
-            "hashtags": _hashtags(region, highlight.keywords, platform),
+            "hashtags": _hashtags(region, highlight.keywords, platform, text=text, title=highlight.title),
             "cta": region.cta,
             "meme": None,
             "rationale": "Literal packaging: the line itself is the hook.",
@@ -138,7 +148,7 @@ def build_variants(
                 "title": _title_case_hook(shaped, title_limit),
                 "hook": hook_text,
                 "description": _trim(f"{caption_body} {region.cta}.", limits["caption"]),
-                "hashtags": _hashtags(region, highlight.keywords, platform),
+                "hashtags": _hashtags(region, highlight.keywords, platform, text=text, title=highlight.title),
                 "cta": region.cta,
                 "meme": meme,
                 "rationale": f"{meme['name']} matches {', '.join(signals[:3]) or 'the tone'} in this market.",
@@ -155,7 +165,7 @@ def build_variants(
             "title": _title_case_hook(base_claim, title_limit),
             "hook": _trim(f"{base_claim} — {region.cta}", 95),
             "description": _trim(f"{caption_body} {region.cta}.", limits["caption"]),
-            "hashtags": _hashtags(region, highlight.keywords, platform),
+            "hashtags": _hashtags(region, highlight.keywords, platform, text=text, title=highlight.title),
             "cta": region.cta,
             "meme": None,
             "rationale": f"Local CTA for {region.name} drives saves and follows.",

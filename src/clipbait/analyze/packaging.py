@@ -20,6 +20,8 @@ from __future__ import annotations
 import re
 from collections import Counter
 
+from ..virality import games, hashtags
+
 # Verb phrasings, most specific first. Each entry is (pattern, rendered verb).
 # ``{obj}`` is substituted with the detected object (may already read as a noun
 # phrase such as "GTA 6 NPCs").
@@ -368,15 +370,45 @@ def quote_title(text: str, limit: int = 70) -> str:
     return f"{chosen} {_tone_emoji(chosen)}"
 
 
-# Tags the reference channel uses on every upload; combined with transcript
-# keywords so the video lands in the same discovery pool.
+# Tags the reference channel uses on every upload; combined with what the clip
+# actually shows (the game, the channel, the words said) so the video lands in
+# the same discovery pool.
 SPEED_TAGS = ["ishowspeed", "speed", "gta6", "gta6gameplay", "gaming", "shorts"]
 
 
-def speed_tags(keywords: list[str] | None) -> list[str]:
+def speed_tags(
+    keywords: list[str] | None,
+    *,
+    text: str = "",
+    title: str = "",
+    uploader: str = "",
+    game: str | None = None,
+    limit: int = 8,
+) -> list[str]:
+    """Tags for a reference-style Speed clip.
+
+    Blends what the clip really shows — the game named in the title or the words,
+    the channel it is from, the words said most — with the discovery block the
+    reference channel carries on every upload. Falls back to the transcript
+    keywords and the fixed block when nothing else is known.
+    """
+    detected = game or games.detect(title, text, " ".join(keywords or []))[0]
     tags: list[str] = []
-    for tag in [*(keywords or []), *SPEED_TAGS, "viral"]:
-        clean = re.sub(r"[^a-z0-9]", "", str(tag).lower())
+    candidates = [
+        *hashtags.make(
+            text=text,
+            title=title,
+            uploader=uploader,
+            game=detected,
+            ai_tags=keywords or (),
+            limit=limit,
+        ),
+        *(keywords or []),
+        *SPEED_TAGS,
+        "viral",
+    ]
+    for candidate in candidates:
+        clean = re.sub(r"[^a-z0-9]", "", str(candidate).lower())
         if len(clean) >= 3 and clean not in tags:
             tags.append(clean)
-    return tags[:8]
+    return tags[:limit]

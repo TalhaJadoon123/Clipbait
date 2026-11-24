@@ -1,5 +1,6 @@
 """Virality playbooks: region profiles, meme formats, packaging and forecast."""
 
+from . import games, hashtags
 from .memes import MEMES, detect_signals, select_memes
 from .packaging import best_posting_time, build_variants, forecast
 from .payout import (
@@ -32,7 +33,9 @@ __all__ = [
     "catalog",
     "detect_signals",
     "forecast",
+    "games",
     "get_region",
+    "hashtags",
     "platform_limits",
     "select_memes",
 ]
