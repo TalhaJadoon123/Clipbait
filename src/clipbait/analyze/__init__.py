@@ -7,7 +7,7 @@ import logging
 from ..config import Settings, get_settings
 from ..schema import ClipScores, Highlight, ProjectOptions, Transcript
 from ..virality import games, hashtags
-from . import packaging, prompts, ranking
+from . import packaging, prompts, ranking, static
 from .heuristics import candidate_highlights, keywords
 from .llm import LLMClient, LLMError
 
@@ -197,6 +197,7 @@ def analyze(
     options: ProjectOptions,
     *,
     energy: list[tuple[float, float]] | None = None,
+    static_ranges: list[tuple[float, float]] | None = None,
     settings: Settings | None = None,
     llm: LLMClient | None = None,
 ) -> tuple[list[Highlight], dict]:
@@ -230,6 +231,14 @@ def analyze(
             if h.end > h.start
         ]
 
+    # Drop the moments that sit on an ad break or a frozen screen before the
+    # ranker runs, so it fills the batch with a good alternative instead of
+    # shipping dead air.
+    if static_ranges:
+        raw, dropped = static.drop_static(raw, static_ranges)
+        if dropped:
+            meta["static_dropped"] = dropped
+
     selected = ranking.select(
         raw,
         max_clips=options.clips,
@@ -239,13 +248,16 @@ def analyze(
     if options.title_style == "speed":
         selected = _prefer_titled(raw, selected, options, transcript, meta)
     if not selected:
+        fallback = candidate_highlights(
+            transcript,
+            target_seconds=options.target_seconds,
+            max_clips=max(options.clips, 5),
+            energy=energy or [],
+        )
+        if static_ranges:
+            fallback, _ = static.drop_static(fallback, static_ranges)
         selected = ranking.select(
-            candidate_highlights(
-                transcript,
-                target_seconds=options.target_seconds,
-                max_clips=max(options.clips, 5),
-                energy=energy or [],
-            ),
+            fallback,
             max_clips=options.clips,
             max_overlap=0.45,
         )

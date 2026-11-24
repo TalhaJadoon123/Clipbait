@@ -122,6 +122,14 @@ class Settings:
     # without an energy curve. On a 24h VOD that audio is ~5GB; this keeps the
     # disk flat and avoids the whole-video download fallback.
     transcript_only: bool = False
+    # Drop clips that sit on an ad break, a "be right back" slate or a frozen
+    # screen. Off by default: a stream that is meant to be still must not lose
+    # its clips. Turn it on per machine with CLIPBAIT_SKIP_STATIC=1.
+    skip_static: bool = False
+    # Mean luma difference (0-255) below which a frame reads as frozen, and the
+    # shortest run worth calling a slate. PeakCut's measured defaults.
+    static_threshold: float = 0.4
+    static_min_seconds: float = 6.0
     hw_encoder: str = "auto"
     cors_origins: tuple[str, ...] = ("*",)
     live_buffer_seconds: int = 420
@@ -227,6 +235,9 @@ def get_settings() -> Settings:
         target_clip_seconds=_env_int("CLIPBAIT_TARGET_CLIP_SECONDS", 55),
         render_concurrency=max(1, _env_int("CLIPBAIT_RENDER_CONCURRENCY", 1)),
         transcript_only=_env_bool("CLIPBAIT_TRANSCRIPT_ONLY", False),
+        skip_static=_env_bool("CLIPBAIT_SKIP_STATIC", False),
+        static_threshold=max(0.0, _env_float("CLIPBAIT_STATIC_THRESHOLD", 0.4)),
+        static_min_seconds=max(1.0, _env_float("CLIPBAIT_STATIC_MIN_SECONDS", 6.0)),
         hw_encoder=_env("CLIPBAIT_HW_ENCODER", "auto") or "auto",
         cors_origins=origins,
         live_buffer_seconds=max(60, _env_int("CLIPBAIT_LIVE_BUFFER_SECONDS", 420)),

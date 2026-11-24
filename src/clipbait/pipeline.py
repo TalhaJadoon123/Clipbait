@@ -12,8 +12,9 @@ import logging
 from pathlib import Path
 
 from . import analyze, db, jobs, media, storage, transcribe
+from .analyze import static as static_scan
 from .captions.presets import get_preset
-from .config import get_settings
+from .config import Settings, get_settings
 from .memes import (
     InsertConfig,
     MemeRequest,
@@ -138,6 +139,31 @@ def _load_transcript(project_id: str) -> Transcript | None:
         return None
 
 
+def _scan_static(
+    project_id: str,
+    video_source: Path | None,
+    settings: Settings,
+) -> list[tuple[float, float]]:
+    """Find ad breaks, slates and frozen screens once, so clips can avoid them.
+
+    Off by default: a stream that is genuinely still would lose its clips, so the
+    operator opts in with ``CLIPBAIT_SKIP_STATIC=1``. Best-effort and never fatal
+    — a missing ffmpeg or an unreadable file yields no ranges and the run
+    continues as before.
+    """
+    if not settings.skip_static or video_source is None or not video_source.exists():
+        return []
+    ranges = static_scan.static_ranges(video_source)
+    if ranges:
+        log.info(
+            "%s: excluding %d static/ad stretch(es) totalling %.0fs",
+            project_id,
+            len(ranges),
+            sum(b - a for a, b in ranges),
+        )
+    return ranges
+
+
 def process_project(project_id: str, job_id: str | None = None) -> dict:
     project = db.get_project(project_id)
     if not project:
@@ -146,6 +172,7 @@ def process_project(project_id: str, job_id: str | None = None) -> dict:
     settings = get_settings()
 
     cached = _load_transcript(project_id)
+    video_source: Path | None = None
     if settings.transcript_only and cached is not None and cached.duration > 0:
         # Transcript-only run: the full audio exists only to transcribe and to
         # score energy. When the transcript is already cached (a 24h VOD's audio
@@ -170,6 +197,7 @@ def process_project(project_id: str, job_id: str | None = None) -> dict:
             if not source or not source.exists():
                 raise media.MediaError("source file missing after ingest")
             audio_input = source
+            video_source = source
             info = media.probe(source)
         db.update(
             "projects",
@@ -212,7 +240,11 @@ def process_project(project_id: str, job_id: str | None = None) -> dict:
             except OSError:
                 pass
     highlights, analysis_meta = analyze.analyze(
-        transcript, options, energy=energy, settings=settings
+        transcript,
+        options,
+        energy=energy,
+        static_ranges=_scan_static(project_id, video_source, settings),
+        settings=settings,
     )
     analysis_meta["transcriber"] = transcript.provider
     if transcript.provider == "mock":
