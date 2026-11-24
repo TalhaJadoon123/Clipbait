@@ -8,6 +8,7 @@ can explain exactly where a job died.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from pathlib import Path
 
@@ -23,7 +24,7 @@ from .memes import (
     plan_inserts,
     prepare_insert,
 )
-from .reframe import ReframePlan, plan_reframe
+from .reframe import ReframePlan, facecam, plan_reframe
 from .render import render_clip
 from .schema import ChatMessage, Highlight, ProjectOptions, Transcript, Word
 from .virality import build_variants, forecast, get_region
@@ -589,6 +590,59 @@ def _fetch_clip_window(project: dict, clip: dict, on_progress=None) -> tuple[Pat
         return storage.resolve(path), 0.0, False
 
 
+def _facecam_file(project_id: str) -> Path:
+    return storage.project_dir(project_id) / "facecam.json"
+
+
+def _facecam_override(
+    project: dict,
+    source: Path,
+    options: ProjectOptions,
+) -> tuple[float, float, float, float] | None:
+    """The measured webcam box for the split-screen layout, or None to use the configured one.
+
+    Only when asked for: the measurement costs one decode pass over the source,
+    so it runs once per project and the answer is cached next to the project.
+    Best-effort — a stream with no webcam, no numpy or no readable frame returns
+    None and the caller keeps ``options.facecam_box``.
+    """
+    if not options.facecam_detect or options.reframe_mode != "facecam":
+        return None
+    cache = _facecam_file(project["id"])
+    try:
+        cached = json.loads(cache.read_text(encoding="utf-8")).get("box")
+        if isinstance(cached, list) and len(cached) == 4:
+            return (float(cached[0]), float(cached[1]), float(cached[2]), float(cached[3]))
+    except (OSError, ValueError, TypeError):
+        pass
+
+    detected = facecam.detect(source)
+    if detected is None:
+        return None
+    info = media.probe(source)
+    box = detected.fractions(info.width, info.height)
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(
+            json.dumps(
+                {"box": list(box), "corner": detected.corner, "conf": detected.conf},
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        log.warning("%s: could not cache the facecam box: %s", project["id"], exc)
+    log.info(
+        "%s: facecam %s, %.0f%% of the frame (%s confidence)",
+        project["id"],
+        detected.corner,
+        100 * (box[2] - box[0]) * (box[3] - box[1]),
+        detected.conf,
+    )
+    return box
+
+
 def render_clip_record(
     clip_id: str,
     *,
@@ -630,7 +684,7 @@ def render_clip_record(
         source_w=source_info.width,
         source_h=source_info.height,
         mode=clip.get("reframe_mode", "auto"),
-        facecam_box=options.facecam_box,
+        facecam_box=_facecam_override(project, source, options) or options.facecam_box,
         facecam_ratio=options.facecam_ratio,
     )
     words = transcript.words

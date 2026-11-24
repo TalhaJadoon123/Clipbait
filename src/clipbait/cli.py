@@ -134,6 +134,7 @@ def cmd_process(args: argparse.Namespace) -> int:
         reframe_mode=args.reframe,
         facecam_box=_facecam_box(getattr(args, "facecam_box", None)),
         facecam_ratio=getattr(args, "facecam_ratio", 0.52),
+        facecam_detect=bool(getattr(args, "facecam_detect", False)),
         title_style=getattr(args, "title_style", "plain"),
         captions=not args.no_captions,
         hook_titles=not args.no_hooks,
@@ -264,6 +265,7 @@ def cmd_grab(args: argparse.Namespace) -> int:
         reframe_mode=args.reframe,
         facecam_box=_facecam_box(getattr(args, "facecam_box", None)),
         facecam_ratio=getattr(args, "facecam_ratio", 0.52),
+        facecam_detect=bool(getattr(args, "facecam_detect", False)),
         title_style=getattr(args, "title_style", "plain"),
         captions=not args.no_captions,
         hook_titles=not args.no_hooks,
@@ -900,6 +902,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--facecam-ratio", type=float, default=0.52, help="facecam share of the frame (0.30-0.70)"
     )
     process.add_argument(
+        "--facecam-detect",
+        action="store_true",
+        help="measure the webcam box from the source instead of using --facecam-box",
+    )
+    process.add_argument(
         "--title-style",
         default="plain",
         choices=["plain", "speed"],
@@ -934,6 +941,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--facecam-box", help="webcam box as fractions x0,y0,x1,y1 (default 0,0.43,0.205,0.655)"
     )
     grab.add_argument("--facecam-ratio", type=float, default=0.52)
+    grab.add_argument(
+        "--facecam-detect",
+        action="store_true",
+        help="measure the webcam box from the source instead of using --facecam-box",
+    )
     grab.add_argument("--title-style", default="plain", choices=["plain", "speed"])
     grab.add_argument("--language", default="auto", help="speech language, e.g. en")
     grab.add_argument(

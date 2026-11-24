@@ -102,6 +102,10 @@ class ProjectOptions(BaseModel):
     # 1080x1920 canvas the face gets (the rest is gameplay).
     facecam_box: tuple[float, float, float, float] = (0.0, 0.43, 0.205, 0.655)
     facecam_ratio: float = Field(default=0.52, ge=0.30, le=0.70)
+    # Measure the webcam box from the source instead of trusting ``facecam_box``.
+    # Off by default: it costs one decode pass per project, and a stream whose
+    # layout is already known gets no benefit from it.
+    facecam_detect: bool = False
     captions: bool = True
     hook_titles: bool = True
     chat_overlay: bool = False

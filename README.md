@@ -294,9 +294,9 @@ src/clipbait/
   api/          FastAPI app, SSE, SPA mount
   ingest/       yt-dlp + local ingestion
   transcribe/   whisper / OpenAI / Gemini / deterministic mock
-  analyze/      LLM + zero-key heuristic ranking, merging
-  reframe/      face sampling, camera path, sendcmd, blur/split
-  captions/     presets + ASS generation (karaoke active word)
+  analyze/      LLM + zero-key heuristic ranking, merging, ad-break skipping
+  reframe/      face sampling, camera path, sendcmd, blur/split, facecam finder
+  captions/     presets + ASS generation (karaoke active word), romanised scripts
   render/       ffmpeg filter graphs and progress
   live/         chat sources, spike detector, rolling recorder, orchestrator
   virality/     26 region profiles, 26 meme formats, variants, forecast
@@ -506,6 +506,9 @@ Everything is environment-driven. Defaults are safe for a laptop.
 | `CLIPBAIT_TARGET_CLIP_SECONDS` | `55` | Default target length |
 | `CLIPBAIT_RENDER_CONCURRENCY` | `1` | Parallel render workers |
 | `CLIPBAIT_HW_ENCODER` | `auto` | `cpu`, `nvenc`, `qsv`, `vaapi`, `videotoolbox` |
+| `CLIPBAIT_SKIP_STATIC` | `0` | Drop clips that sit on an ad break, a slate or a frozen screen |
+| `CLIPBAIT_STATIC_THRESHOLD` | `0.4` | Mean frame difference (0-255) below which a frame reads as frozen |
+| `CLIPBAIT_STATIC_MIN_SECONDS` | `6` | Shortest frozen stretch worth excluding |
 | `CLIPBAIT_MEME_PROVIDER` | `auto` | Meme video inserts: `auto`, `search`, `api`, `fixture`, `none` |
 | `CLIPBAIT_MEME_SEARCH_URL` | — | Searchable meme library endpoint (see `docs/MEMES.md`) |
 | `CLIPBAIT_MEME_SEARCH_KEY` | — | Key/token for the meme library |

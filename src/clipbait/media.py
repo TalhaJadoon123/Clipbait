@@ -49,6 +49,25 @@ def run(cmd: list[str], *, timeout: int | None = None, check: bool = True) -> su
     return proc
 
 
+def pipe(cmd: list[str], *, timeout: int | None = None, check: bool = True) -> bytes:
+    """Run a command and return its raw stdout, for filters that emit pixels.
+
+    ``run`` decodes stdout as text, which corrupts rawvideo/frame dumps; this
+    keeps the bytes.
+    """
+    log.debug("exec: %s", " ".join(cmd[:14]))
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=timeout, check=False)
+    except FileNotFoundError as exc:
+        raise MediaError(f"missing binary: {cmd[0]}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise MediaError(f"command timed out after {timeout}s: {cmd[0]}") from exc
+    if check and proc.returncode != 0:
+        tail = (proc.stderr or b"").decode("utf-8", "replace").strip().splitlines()[-8:]
+        raise MediaError(f"{cmd[0]} failed ({proc.returncode}): " + " | ".join(tail))
+    return proc.stdout or b""
+
+
 def probe(path: Path) -> MediaInfo:
     settings = get_settings()
     proc = run(
