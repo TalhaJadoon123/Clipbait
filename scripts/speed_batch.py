@@ -15,6 +15,9 @@ choice rather than a default that drifted):
   only way the renders stay near real time.
 * **Bounded publishing.**  Uploads are capped per run and scheduled into the
   platform's best windows, so a 200-clip backlog is spread instead of dumped.
+* **Flat disk while publishing.**  A live upload copies the file into the
+  publisher; with ``--prune-uploaded`` the local render is deleted the moment
+  its upload lands, so a 200-clip publish never needs a second copy on disk.
 
 Usage::
 
@@ -34,7 +37,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from clipbait import db  # noqa: E402
+from clipbait import db, storage  # noqa: E402
 from clipbait.config import get_settings  # noqa: E402
 from clipbait.ingest import source_kind_for  # noqa: E402
 from clipbait.pipeline import process_project  # noqa: E402
@@ -152,24 +155,60 @@ def resume_vod(url: str, clips: int, *, title: str | None = None) -> dict:
     return {"project_id": project["id"], "clips": rendered, "ready": len(ready), "transcriber": "cached"}
 
 
-def publish(limit: int, *, live: bool, min_score: float, project_match: str | None) -> int:
-    from clipbait.publish import PublishOptions, publish_provider, publish_queue
+def _prune_render(clip_id: str) -> int:
+    """Delete a clip's local render once it is safely on the publisher.
 
-    results = publish_queue(
-        options=PublishOptions(
-            live=live,
-            platforms=("shorts",),
-            use_best_times=True,
-        ),
-        provider=publish_provider(),
-        limit=limit,
-        min_score=min_score,
-        project_match=project_match,
+    Publishing copies the file into Postiz, so the local render is redundant the
+    moment the upload succeeds. Removing it keeps disk use flat across a
+    200-clip publish instead of needing a second ~6GB copy of every clip on a
+    box that was already at 98% full. Returns the bytes reclaimed.
+    """
+    clip = db.get_clip(clip_id) or {}
+    freed = 0
+    for key in ("render_path", "thumb_path"):
+        stored = clip.get(key)
+        if not stored:
+            continue
+        try:
+            path = storage.resolve(stored)
+            freed += path.stat().st_size
+        except OSError:
+            continue
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return freed
+
+
+def publish(
+    limit: int,
+    *,
+    live: bool,
+    min_score: float,
+    project_match: str | None,
+    prune: bool = False,
+    chunk: int = 25,
+) -> int:
+    """Publish up to ``limit`` clips, best-expected first.
+
+    A live run goes out in small chunks rather than one call so each render can
+    be pruned as soon as its upload lands (``prune``), keeping the disk flat.
+    A dry run just prints the plan -- one pass -- since nothing is recorded and
+    the queue would otherwise hand back the same clips again.
+    """
+    from clipbait.money import build_queue, load_campaign
+    from clipbait.publish import (
+        PublishOptions,
+        publish_clip,
+        publish_provider,
+        publish_queue,
     )
-    sent = 0
-    for result in results:
-        if result.ok:
-            sent += 1
+
+    options = PublishOptions(live=live, platforms=("shorts",), use_best_times=True)
+    provider = publish_provider()
+
+    def _log(result) -> bool:
         log.info(
             "publish %s %s %s %s",
             result.clip_id,
@@ -177,6 +216,49 @@ def publish(limit: int, *, live: bool, min_score: float, project_match: str | No
             result.scheduled_date or "now",
             (result.error or result.title or "")[:80],
         )
+        return result.ok
+
+    if not live:
+        results = publish_queue(
+            options=options,
+            provider=provider,
+            limit=limit,
+            min_score=min_score,
+            project_match=project_match,
+        )
+        return sum(1 for result in results if _log(result))
+
+    rules = load_campaign(options.campaign)
+    sent = 0
+    handled = 0
+    while handled < limit:
+        queue = build_queue(
+            limit=min(chunk, limit - handled),
+            min_score=min_score,
+            project_match=project_match,
+            rate_per_1k=rules.rate_per_1k,
+        )
+        items = queue.items
+        if not items:
+            break
+        progressed = False
+        for item in items:
+            result = publish_clip(item.clip_id, options=options, provider=provider)
+            if _log(result):
+                sent += 1
+                # A queue rebuild after a prune would otherwise loop on the
+                # same clips, so a real send -- not merely a plan -- is what
+                # counts as progress.
+                if not result.metadata.get("skipped"):
+                    progressed = True
+            if prune and result.ok and not result.metadata.get("skipped"):
+                freed = _prune_render(item.clip_id)
+                if freed:
+                    log.info("pruned %s render (%.1fMB reclaimed)", item.clip_id, freed / 1e6)
+        handled += len(items)
+        if not progressed:
+            log.info("publish stalled after %d clip(s); stopping", sent)
+            break
     return sent
 
 
@@ -192,6 +274,11 @@ def main(argv: list[str] | None = None) -> int:
         "--resume",
         action="store_true",
         help="render only unfinished clips of an existing project (keeps good renders)",
+    )
+    parser.add_argument(
+        "--prune-uploaded",
+        action="store_true",
+        help="delete each render once its live upload succeeds (keeps disk flat)",
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -229,6 +316,7 @@ def main(argv: list[str] | None = None) -> int:
                     min_score=args.min_score,
                     # Match on the URL: it is unique, whereas the title is not.
                     project_match=project.get("source_url") or project.get("title"),
+                    prune=args.prune_uploaded,
                 )
                 log.info("published %s clip(s) for %s", sent, project["id"])
             except Exception:  # noqa: BLE001 - publishing must not lose renders
