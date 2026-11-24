@@ -33,6 +33,7 @@ import argparse
 import logging
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -181,6 +182,33 @@ def _prune_render(clip_id: str) -> int:
     return freed
 
 
+def _spread_at(region: str, index: int, per_day: int) -> str:
+    """An explicit local posting time, ``per_day`` clips a day, starting tomorrow.
+
+    YouTube caps a channel at roughly 15 uploads a day (its API answers "You have
+    reached your daily upload limit" past that), so a 200-clip backlog cannot all
+    land on one day. Each clip gets its own future day and a slot inside a
+    17:00-23:00 local window, which both respects the quota and spreads the posts
+    for reach instead of dumping them. Times are in the audience's own zone.
+    """
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from clipbait.publish.windows import region_timezone
+
+    per_day = max(1, per_day)
+    tz = ZoneInfo(region_timezone(region))
+    today = datetime.now(tz).date()
+    day = today + timedelta(days=1 + index // per_day)
+    slot = index % per_day
+    gap = max(1, (6 * 60) // per_day)  # a 6-hour evening window
+    minute_of_day = min(17 * 60 + slot * gap, 23 * 60 + 30)
+    moment = datetime(day.year, day.month, day.day, tzinfo=tz) + timedelta(
+        minutes=minute_of_day
+    )
+    return moment.isoformat()
+
+
 def publish(
     limit: int,
     *,
@@ -188,12 +216,16 @@ def publish(
     min_score: float,
     project_match: str | None,
     prune: bool = False,
+    per_day: int = 0,
     chunk: int = 25,
 ) -> int:
     """Publish up to ``limit`` clips, best-expected first.
 
     A live run goes out in small chunks rather than one call so each render can
     be pruned as soon as its upload lands (``prune``), keeping the disk flat.
+    ``per_day`` spreads the posts across future days (empty means let the
+    best-time/region playbook pick, which packs them onto the current day).
+
     A dry run just prints the plan -- one pass -- since nothing is recorded and
     the queue would otherwise hand back the same clips again.
     """
@@ -243,13 +275,18 @@ def publish(
             break
         progressed = False
         for item in items:
-            result = publish_clip(item.clip_id, options=options, provider=provider)
+            # Only a clip that actually goes out consumes a day's slot, so a
+            # failed upload does not leave a hole in the schedule.
+            clip_options = options
+            if per_day:
+                clip_options = replace(options, at=_spread_at(item.region, sent, per_day))
+            result = publish_clip(item.clip_id, options=clip_options, provider=provider)
             if _log(result):
-                sent += 1
                 # A queue rebuild after a prune would otherwise loop on the
                 # same clips, so a real send -- not merely a plan -- is what
-                # counts as progress.
+                # counts as progress and advances the schedule.
                 if not result.metadata.get("skipped"):
+                    sent += 1
                     progressed = True
             if prune and result.ok and not result.metadata.get("skipped"):
                 freed = _prune_render(item.clip_id)
@@ -279,6 +316,12 @@ def main(argv: list[str] | None = None) -> int:
         "--prune-uploaded",
         action="store_true",
         help="delete each render once its live upload succeeds (keeps disk flat)",
+    )
+    parser.add_argument(
+        "--per-day",
+        type=int,
+        default=0,
+        help="spread live posts across future days, N per day (0 = pack onto today)",
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -317,6 +360,7 @@ def main(argv: list[str] | None = None) -> int:
                     # Match on the URL: it is unique, whereas the title is not.
                     project_match=project.get("source_url") or project.get("title"),
                     prune=args.prune_uploaded,
+                    per_day=args.per_day,
                 )
                 log.info("published %s clip(s) for %s", sent, project["id"])
             except Exception:  # noqa: BLE001 - publishing must not lose renders

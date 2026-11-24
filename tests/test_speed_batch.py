@@ -191,3 +191,15 @@ def test_publish_live_prunes_a_render_only_after_a_successful_upload(monkeypatch
     assert sent == 1
     assert not posted_render.exists()  # pruned once its upload landed
     assert failed_render.exists()  # kept, because its upload failed
+
+
+def test_spread_at_puts_per_day_clips_on_separate_days():
+    sb = load_speed_batch()
+    from datetime import datetime
+
+    moments = [datetime.fromisoformat(sb._spread_at("US", i, 3)) for i in range(4)]
+
+    # Three clips share a day, ascending; the fourth rolls to the next day.
+    assert moments[0].date() == moments[1].date() == moments[2].date()
+    assert moments[3].date() > moments[2].date()
+    assert moments[0] < moments[1] < moments[2]
